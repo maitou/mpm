@@ -1,0 +1,12 @@
+# scope_id -> preset_id (built-in proxy-group / direct-group)
+proxy-group:
+  shell: proxy
+  docker: proxy
+  k3s: proxy
+  go: proxy
+
+direct-group:
+  shell: direct
+  docker: direct
+  k3s: direct
+  go: direct

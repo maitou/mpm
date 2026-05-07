@@ -1,0 +1,16 @@
+# no_proxy: loopback + RFC1918 + typical k3s pod/service CIDR + in-cluster DNS suffixes (same-host dev).
+proxy:
+  summary: "Outbound HTTP(S) via local proxy (e.g. mihomo mixed port)"
+  http_proxy: "http://127.0.0.1:7890"
+  https_proxy: "http://127.0.0.1:7890"
+  all_proxy: "socks5://127.0.0.1:7890"
+  no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
+  probe: "https://www.google.com/generate_204"
+
+direct:
+  summary: "Remove mpm-managed proxy exports from shell rc"
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+  no_proxy: ""
+  probe: ""

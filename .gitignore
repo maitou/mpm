@@ -1,0 +1,87 @@
+# Local documentation / drafts (not tracked)
+doc/
+
+# --- Common (aligned with repo root .gitignore) ---
+# Editor / IDE
+.idea/
+*.swp
+*.swo
+*~
+=*
+
+.vscode/
+*.code-workspace
+.cursor/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Logs and temp
+*.log
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+.cache/
+.tmp_*
+
+# Local secrets (do not commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Dependencies / virtualenvs
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+ENV/
+.uv/
+
+# Go (if used alongside scripts)
+vendor/
+go.work
+go.work.sum
+
+# Archives
+*.tar
+*.tar.gz
+*.rar
+*.zip
+*.gz
+
+# Build / output
+dist/
+build/
+out/
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test / coverage
+coverage/
+*.cover
+.pytest_cache/
+.tox/
+.nox/
+
+# Local Kubernetes overrides
+*.local.yaml
+*.local.yml

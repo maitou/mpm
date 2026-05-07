@@ -1,0 +1,653 @@
+#!/usr/bin/env bash
+# Multi Proxy Manager — Phase A (MVP)
+set -euo pipefail
+
+mpm_resolve_prefix() {
+  local bindir root_here
+  bindir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+  root_here=$(cd "${bindir}/.." && pwd -P)
+  if [[ -f "${root_here}/lib/common.sh" ]]; then
+    (cd "$root_here" && pwd -P)
+    return 0
+  fi
+  if [[ -f "${bindir}/../share/mpm/lib/common.sh" ]]; then
+    (cd "${bindir}/../share/mpm" && pwd -P)
+    return 0
+  fi
+  echo "mpm: cannot find lib/common.sh." >&2
+  echo "mpm: tried: ${root_here}/lib/common.sh and ${bindir}/../share/mpm/lib/common.sh" >&2
+  return 1
+}
+MPM_PREFIX=$(mpm_resolve_prefix) || exit 1
+export MPM_PREFIX
+
+# shellcheck source=../lib/common.sh
+source "${MPM_PREFIX}/lib/common.sh"
+# shellcheck source=../lib/registry.sh
+source "${MPM_PREFIX}/lib/registry.sh"
+
+mpm_help() {
+  cat <<'EOF'
+mpm - Multi Proxy Manager (shell, Docker, k3s, Go outbound HTTP(S) proxy wiring)
+
+Usage:
+  mpm --help
+  mpm --list-scopes
+  mpm [OPTION]... VERB [ARG]...
+
+  First argument must be a registered verb (ls, use, current, test, shell-env) or --list-scopes.
+  Scope-specific subcommands like `mpm shell …` are not supported.
+
+Options:
+      --help               Print this help and exit 0; long option only.
+      --list-scopes        Print scope id, requires-root, title, description (first argv only).
+      --scopes=LIST        Comma-separated scope ids (trimmed). Omitted = all registered scopes.
+                             With `mpm use SCOPE/PRESET`, LIST must include that SCOPE if set.
+      --json               Machine-readable JSON for `current` and `ls` (schema version in output).
+      --export-shell-env   With `use` only: after a successful apply, print sh export/unset lines on stdout
+                             (same as `mpm shell-env`) and send the status table to stderr, e.g.:
+                             eval "$(mpm use shell/proxy --export-shell-env)"
+
+Verbs:
+  use TARGET             Apply proxy-group, direct-group, another group id from share/profiles/groups.yaml,
+                           or SCOPE/PRESET (e.g. shell/proxy). Add --export-shell-env so the current shell
+                           can apply proxy env immediately (see Options).
+  current [SCOPE]        Table: SCOPE, PRESET, DETAIL (inferred). Optional SCOPE limits to one id
+                           (must match --scopes when both are set).
+  ls                     List groups (share/profiles/groups.yaml) and presets; `*` marks inferred current preset when known.
+  test [TARGET]          Read-only checks (curl and/or live tools). When the tested preset matches the
+                           inferred on-disk preset and uses a proxy: shell/go use env-style curl or git;
+                           docker runs docker pull; k3s runs crictl/ctr pull. Otherwise curl --proxy only.
+                           TARGET: empty = each scope’s inferred preset; group = mapped presets per scope;
+                           scope id = inferred preset; scope/preset = explicit preset.
+  shell-env              Print sh export/unset lines for proxy-related scopes (shell, go) from inferred state.
+                           Does not change the shell by itself; run eval "$(mpm shell-env --scopes=shell,go)"
+                           or use mpm use … --export-shell-env.
+
+Groups (built-in, share/profiles/groups.yaml):
+  proxy-group            Map scopes to local proxy preset (default http://127.0.0.1:7890 — see YAML).
+  direct-group           Remove mpm-managed fragments / direct preset semantics.
+
+Exit codes:
+  0 success or all targeted scopes are confident no-ops; 1 invalid argv; 2 permission (root required);
+  3 partial failure after best-effort (successful scopes are not rolled back).
+
+PRD (in-repo): mpm/doc/mpm-prd.md
+
+Rules:
+  First argument must be ls|use|current|test|shell-env, or --help, or --list-scopes.
+
+Dependencies: yq for YAML; curl for test; jq optional (state.json). Use sudo mpm ... when docker/k3s need root;
+  yq lookup matches mrm: if not on PATH, try /usr/local/bin, /usr/bin, /snap, then SUDO_USER's ~/.local/bin, then HOME/.local/bin.
+EOF
+}
+
+mpm_source_scope() {
+  local id=$1
+  # shellcheck source=/dev/null
+  source "${MPM_PREFIX}/lib/scopes/${id}.sh"
+}
+
+mpm_scope_requires_root() {
+  local id=$1
+  mpm_source_scope "$id"
+  "mpm_scope_${id}_requires_root" 2>/dev/null | tail -1 | tr -d '[:space:]'
+}
+
+mpm_active_scopes_fill() {
+  local scopes_csv=$1
+  MPM_ACTIVE_SCOPES=()
+  local -A want=()
+  if [[ -n "${scopes_csv// /}" ]]; then
+    local part
+    while IFS= read -r part; do
+      [[ -z "$part" ]] && continue
+      want["$part"]=1
+    done < <(echo "$scopes_csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    local id ok
+    for id in "${!want[@]}"; do
+      ok=0
+      local rid
+      while IFS= read -r rid; do
+        [[ "$rid" == "$id" ]] && ok=1
+      done < <(mpm_registry_list)
+      if [[ "$ok" -ne 1 ]]; then
+        echo "mpm: unknown scope: ${id}" >&2
+        echo "mpm: registered: $(mpm_registry_list | paste -sd, -)" >&2
+        exit 1
+      fi
+    done
+  fi
+  local sid
+  while IFS= read -r sid; do
+    if [[ ${#want[@]} -eq 0 ]]; then
+      MPM_ACTIVE_SCOPES+=("$sid")
+    elif [[ -n "${want[$sid]:-}" ]]; then
+      MPM_ACTIVE_SCOPES+=("$sid")
+    fi
+  done < <(mpm_registry_list)
+}
+
+mpm_list_scopes_cmd() {
+  local id rr title desc root_word
+  printf '%-10s %-15s %-42s %s\n' "SCOPE" "REQUIRES_ROOT" "TITLE" "DESCRIPTION"
+  printf '%-10s %-15s %-42s %s\n' \
+    "$(printf '%*s' 10 '' | tr ' ' '-')" \
+    "$(printf '%*s' 15 '' | tr ' ' '-')" \
+    "$(printf '%*s' 42 '' | tr ' ' '-')" \
+    "$(printf '%*s' 48 '' | tr ' ' '-')"
+  while IFS= read -r id; do
+    mpm_source_scope "$id"
+    rr=$(mpm_scope_requires_root "$id")
+    title=""
+    desc=""
+    while IFS= read -r line; do
+      case "$line" in
+        title=*) title=${line#title=} ;;
+        description=*) desc=${line#description=} ;;
+      esac
+    done < <("mpm_scope_${id}_metadata" 2>/dev/null)
+    root_word="${rr:-?}"
+    [[ "$root_word" == "1" ]] && root_word=yes
+    [[ "$root_word" == "0" ]] && root_word=no
+    printf '%-10s %-15s %-42s %s\n' "$id" "$root_word" "${title:-?}" "${desc:-?}"
+  done < <(mpm_registry_list)
+}
+
+mpm_csv_intersect_scopes() {
+  local primary=$1 filter=$2
+  [[ -n "${filter// /}" ]] || {
+    echo "$primary"
+    return 0
+  }
+  [[ -n "${primary// /}" ]] || {
+    echo "$filter"
+    return 0
+  }
+  local -A want=()
+  local part out=()
+  while IFS= read -r part; do
+    part=$(echo "$part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$part" ]] && continue
+    want["$part"]=1
+  done < <(echo "$filter" | tr ',' '\n')
+  while IFS= read -r part; do
+    part=$(echo "$part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -z "$part" ]] && continue
+    [[ -n "${want[$part]:-}" ]] && out+=("$part")
+  done < <(echo "$primary" | tr ',' '\n')
+  if [[ ${#out[@]} -eq 0 ]]; then
+    echo "mpm: no overlap between target scopes and --scopes filter" >&2
+    return 1
+  fi
+  (IFS=','; echo "${out[*]}")
+}
+
+mpm_get_current_preset() {
+  local id=$1 k v out=""
+  mpm_source_scope "$id"
+  while IFS= read -r line; do
+    k=${line%%=*}
+    v=${line#*=}
+    [[ "$k" == preset ]] && out="$v"
+  done < <("mpm_scope_${id}_get_state" 2>/dev/null)
+  printf '%s' "$out"
+}
+
+mpm_current_cmd() {
+  local scopes_csv=$1 target=${2:-}
+  mpm_ensure_yq_on_path
+  mpm_require_yq || exit 1
+  local effective_csv=$scopes_csv
+  if [[ -n "${target:-}" ]]; then
+    if [[ "$target" == */* ]]; then
+      echo "mpm: current: optional argument must be a single scope id (not scope/preset)." >&2
+      exit 1
+    fi
+    if mpm_group_exists "$target"; then
+      echo "mpm: current: group names are not supported here; use --scopes= or omit argument." >&2
+      exit 1
+    fi
+    local found=0 rid
+    while IFS= read -r rid; do
+      [[ "$rid" == "$target" ]] && found=1
+    done < <(mpm_registry_list)
+    if [[ "$found" -eq 1 ]]; then
+      effective_csv="$target"
+    else
+      echo "mpm: current: unknown scope: ${target}" >&2
+      exit 1
+    fi
+    if [[ -n "${scopes_csv// /}" ]]; then
+      effective_csv=$(mpm_csv_intersect_scopes "$effective_csv" "$scopes_csv") || exit 1
+    fi
+    scopes_csv=$effective_csv
+  fi
+  mpm_active_scopes_fill "$scopes_csv"
+  if [[ "${MPM_JSON:-0}" == "1" ]]; then
+    mpm_current_json
+    return 0
+  fi
+  printf '%-10s %-18s %s\n' "SCOPE" "PRESET" "DETAIL"
+  printf '%-10s %-18s %s\n' \
+    "$(printf '%*s' 10 '' | tr ' ' '-')" \
+    "$(printf '%*s' 18 '' | tr ' ' '-')" \
+    "$(printf '%*s' 56 '' | tr ' ' '-')"
+  local id k v preset detail
+  for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+    mpm_source_scope "$id"
+    preset= detail=
+    while IFS= read -r line; do
+      k=${line%%=*}
+      v=${line#*=}
+      case "$k" in preset) preset=$v ;; detail) detail=$v ;; esac
+    done < <("mpm_scope_${id}_get_state" 2>/dev/null)
+    printf '%-10s %-18s %s\n' "$id" "${preset:--}" "${detail:--}"
+  done
+}
+
+mpm_current_json() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "mpm: --json requires jq" >&2
+    exit 1
+  fi
+  local id k v preset detail tmp rows_json
+  tmp=$(mktemp)
+  : >"$tmp"
+  for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+    mpm_source_scope "$id"
+    preset= detail=
+    while IFS= read -r line; do
+      k=${line%%=*}
+      v=${line#*=}
+      case "$k" in preset) preset=$v ;; detail) detail=$v ;; esac
+    done < <("mpm_scope_${id}_get_state" 2>/dev/null)
+    jq -n --arg s "$id" --arg p "$preset" --arg d "$detail" \
+      '{scope:$s,preset:$p,detail:$d}' >>"$tmp"
+  done
+  rows_json=$(jq -s '.' "$tmp")
+  rm -f "$tmp"
+  jq -n --argjson ver "${MPM_JSON_SCHEMA_VERSION}" --argjson scopes "$rows_json" '{schema:$ver,scopes:$scopes}'
+}
+
+mpm_use_exit_summary() {
+  local ok=$1 fail=$2 rootf=$3
+  if [[ "$fail" -eq 0 ]]; then
+    return 0
+  fi
+  echo "mpm: some scopes failed (successful ones were not rolled back). ok=${ok} fail=${fail}" >&2
+  if [[ "$ok" -gt 0 ]]; then
+    exit 3
+  fi
+  if [[ "$rootf" -gt 0 && "$fail" -eq "$rootf" ]]; then
+    exit 2
+  fi
+  exit 3
+}
+
+mpm_use_bundle() {
+  local bundle=$1 scopes_csv=$2
+  mpm_require_yq || exit 1
+  mpm_group_exists "$bundle" || {
+    echo "mpm: unknown group (not in share/profiles/groups.yaml): ${bundle}" >&2
+    exit 1
+  }
+  mpm_active_scopes_fill "$scopes_csv"
+  local id rc ok=0 fail=0 rootf=0 bp
+  for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+    rc=0
+    local rr
+    rr=$(mpm_scope_requires_root "$id")
+    if [[ "$rr" == "1" ]] && ! mpm_is_root; then
+      echo "mpm: [${id}] root required; use: sudo mpm use ..." >&2
+      fail=$((fail + 1))
+      rootf=$((rootf + 1))
+      continue
+    fi
+    mpm_source_scope "$id"
+    bp=$(mpm_group_preset "$bundle" "$id" || true)
+    set +e
+    "mpm_scope_${id}_apply_bundle" "$bundle"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+      ok=$((ok + 1))
+      bp=$(mpm_group_preset "$bundle" "$id" || true)
+      [[ -n "$bp" && "$bp" != "null" ]] && mpm_state_touch_scope "$id" "$bp" "$bundle"
+    else
+      fail=$((fail + 1))
+      [[ "$rc" -eq 2 ]] && rootf=$((rootf + 1))
+      echo "mpm: [${id}] apply_bundle failed (exit ${rc})" >&2
+    fi
+  done
+  mpm_use_exit_summary "$ok" "$fail" "$rootf"
+}
+
+mpm_use_scope_preset() {
+  local target=$1 scopes_csv=$2
+  local scope=${target%%/*}
+  local preset=${target#*/}
+  if [[ "$scope" == "$target" ]] || [[ -z "$preset" ]]; then
+    echo "mpm: invalid target (expected scope/preset): ${target}" >&2
+    exit 1
+  fi
+  local ok=0
+  while IFS= read -r rid; do
+    [[ "$rid" == "$scope" ]] && ok=1
+  done < <(mpm_registry_list)
+  if [[ "$ok" -ne 1 ]]; then
+    echo "mpm: unknown scope: ${scope}" >&2
+    exit 1
+  fi
+  mpm_require_yq || exit 1
+  mpm_preset_has "$scope" "$preset" || {
+    echo "mpm: unknown preset: ${scope}/${preset}" >&2
+    exit 1
+  }
+  if [[ -n "${scopes_csv// /}" ]]; then
+    local found=0 part
+    while IFS= read -r part; do
+      [[ "$part" == "$scope" ]] && found=1
+    done < <(echo "$scopes_csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ "$found" -ne 1 ]]; then
+      echo "mpm: --scopes must include ${scope} when using ${scope}/${preset}" >&2
+      exit 1
+    fi
+  fi
+  local rr
+  rr=$(mpm_scope_requires_root "$scope")
+  if [[ "$rr" == "1" ]] && ! mpm_is_root; then
+    echo "mpm: [${scope}] root required" >&2
+    exit 2
+  fi
+  mpm_source_scope "$scope"
+  set +e
+  "mpm_scope_${scope}_apply_preset" "$preset"
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    echo "mpm: [${scope}] apply_preset failed (exit ${rc})" >&2
+    exit "$rc"
+  fi
+  mpm_state_touch_scope "$scope" "$preset" "${scope}/${preset}"
+}
+
+mpm_use_print_current_after_success() {
+  local scopes_csv=$1 narrow_scope=${2:-}
+  echo ""
+  echo "Current (inferred):"
+  if [[ -n "$narrow_scope" ]]; then
+    mpm_current_cmd "$scopes_csv" "$narrow_scope"
+  else
+    mpm_current_cmd "$scopes_csv"
+  fi
+}
+
+# Print eval-able export/unset lines for scopes that implement mpm_scope_*_emit_shell_env.
+mpm_shell_env_cmd() {
+  local scopes_csv=$1
+  mpm_require_yq || exit 1
+  mpm_active_scopes_fill "$scopes_csv"
+  local id
+  if [[ -t 1 ]] && [[ -t 2 ]]; then
+    echo "mpm(shell-env): stdout is not executed automatically; apply in this shell with:" >&2
+    echo '  eval "$(mpm shell-env --scopes=shell,go)"' >&2
+    echo "" >&2
+  fi
+  for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+    mpm_source_scope "$id"
+    if declare -F "mpm_scope_${id}_emit_shell_env" >/dev/null 2>&1; then
+      "mpm_scope_${id}_emit_shell_env"
+    fi
+  done
+}
+
+mpm_use_cmd() {
+  local target=$1 scopes_csv=$2 used_scope_preset=""
+  [[ -n "$target" ]] || {
+    echo "mpm: use requires a target: proxy-group | direct-group | scope/preset" >&2
+    exit 1
+  }
+  if [[ "$target" == */* ]]; then
+    used_scope_preset="${target%%/*}"
+    mpm_use_scope_preset "$target" "$scopes_csv"
+  else
+    mpm_use_bundle "$target" "$scopes_csv"
+  fi
+  if [[ "${MPM_EXPORT_SHELL_ENV:-0}" == "1" ]]; then
+    mpm_use_print_current_after_success "$scopes_csv" "$used_scope_preset" >&2
+    local env_scopes=$scopes_csv
+    [[ -n "$used_scope_preset" ]] && env_scopes=$used_scope_preset
+    mpm_shell_env_cmd "$env_scopes"
+  else
+    mpm_use_print_current_after_success "$scopes_csv" "$used_scope_preset"
+  fi
+}
+
+mpm_ls_cmd() {
+  local scopes_csv=$1
+  mpm_require_yq || exit 1
+  mpm_active_scopes_fill "$scopes_csv"
+  if [[ "${MPM_JSON:-0}" == "1" ]]; then
+    mpm_ls_json
+    return 0
+  fi
+  echo "Groups (share/profiles/groups.yaml):"
+  printf '  %-18s  %s\n' "proxy-group" "Local HTTP(S) proxy aggregate (see share/profiles/groups.yaml)"
+  printf '  %-18s  %s\n' "direct-group" "Remove mpm-managed proxy snippets / direct presets"
+  echo ""
+  echo "Presets ( * = current inferred ):"
+  local id cur star pid summ hint
+  for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+    echo ""
+    echo "[${id}]"
+    cur=$(mpm_get_current_preset "$id")
+    mpm_source_scope "$id"
+    while IFS=$'\t' read -r pid summ hint; do
+      [[ -z "$pid" ]] && continue
+      star=" "
+      [[ -n "$cur" && "$cur" == "$pid" ]] && star="*"
+      printf '  %s  %-16s  %-40s  %s\n' "$star" "$pid" "${summ:--}" "${hint:--}"
+    done < <("mpm_scope_${id}_list_presets")
+  done
+}
+
+mpm_ls_json() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "mpm: --json requires jq" >&2
+    exit 1
+  fi
+  local id cur pid summ hint curflag tmp scope_doc scopes_json
+  tmp=$(mktemp)
+  : >"$tmp"
+  for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+    cur=$(mpm_get_current_preset "$id")
+    mpm_source_scope "$id"
+    local inner_tmp
+    inner_tmp=$(mktemp)
+    : >"$inner_tmp"
+    while IFS=$'\t' read -r pid summ hint; do
+      [[ -z "$pid" ]] && continue
+      if [[ -n "$cur" && "$cur" == "$pid" ]]; then
+        jq -n --arg i "$pid" --arg s "$summ" --arg h "$hint" --argjson c true \
+          '{id:$i,summary:$s,hint:$h,current:$c}' >>"$inner_tmp"
+      else
+        jq -n --arg i "$pid" --arg s "$summ" --arg h "$hint" --argjson c false \
+          '{id:$i,summary:$s,hint:$h,current:$c}' >>"$inner_tmp"
+      fi
+    done < <("mpm_scope_${id}_list_presets")
+    scope_doc=$(jq -n --arg s "$id" --argjson p "$(jq -s '.' "$inner_tmp")" '{scope:$s,presets:$p}')
+    rm -f "$inner_tmp"
+    printf '%s\n' "$scope_doc" >>"$tmp"
+  done
+  scopes_json=$(jq -s '.' "$tmp")
+  rm -f "$tmp"
+  jq -n --argjson ver "${MPM_JSON_SCHEMA_VERSION}" \
+    --argjson groups '["proxy-group","direct-group"]' \
+    --argjson scopes "$scopes_json" \
+    '{schema:$ver,groups:$groups,scopes:$scopes}'
+}
+
+mpm_test_cmd() {
+  local target=$1 scopes_csv=$2
+  mpm_require_yq || exit 1
+  local sig_fail=0 any=0 r scope preset p id pid ok cur eff_csv
+
+  if [[ -z "${target:-}" ]]; then
+    mpm_active_scopes_fill "$scopes_csv"
+    for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+      mpm_source_scope "$id"
+      cur=$(mpm_get_current_preset "$id")
+      if [[ -z "$cur" ]]; then
+        echo "mpm: [${id}] skip test: no inferred preset (unknown or mixed)" >&2
+        continue
+      fi
+      any=1
+      set +e
+      "mpm_scope_${id}_test_preset" "$cur"
+      r=$?
+      set -e
+      [[ "$r" -ne 0 ]] && sig_fail=$((sig_fail + 1))
+    done
+    [[ "$any" -eq 0 ]] && exit 0
+    [[ "$sig_fail" -gt 0 ]] && exit 1
+    exit 0
+  fi
+
+  if [[ "$target" == */* ]]; then
+    scope=${target%%/*}
+    preset=${target#*/}
+    ok=0
+    while IFS= read -r rid; do
+      [[ "$rid" == "$scope" ]] && ok=1
+    done < <(mpm_registry_list)
+    if [[ "$ok" -ne 1 ]]; then
+      echo "mpm: unknown scope: ${scope}" >&2
+      exit 1
+    fi
+    mpm_preset_has "$scope" "$preset" || {
+      echo "mpm: unknown preset: ${scope}/${preset}" >&2
+      exit 1
+    }
+    mpm_source_scope "$scope"
+    set +e
+    "mpm_scope_${scope}_test_preset" "$preset"
+    r=$?
+    set -e
+    exit "$r"
+  fi
+
+  if mpm_group_exists "$target"; then
+    eff_csv=$(mpm_group_scope_ids_ordered_csv "$target") || exit 1
+    if [[ -n "${scopes_csv// /}" ]]; then
+      eff_csv=$(mpm_csv_intersect_scopes "$eff_csv" "$scopes_csv") || exit 1
+    fi
+    mpm_active_scopes_fill "$eff_csv"
+    for id in "${MPM_ACTIVE_SCOPES[@]}"; do
+      mpm_source_scope "$id"
+      bp=$(mpm_group_preset "$target" "$id" || true)
+      if [[ -z "$bp" || "$bp" == "null" ]]; then
+        echo "mpm: [${id}] skip test: group has no preset mapping" >&2
+        continue
+      fi
+      any=1
+      set +e
+      "mpm_scope_${id}_test_preset" "$bp"
+      r=$?
+      set -e
+      [[ "$r" -ne 0 ]] && sig_fail=$((sig_fail + 1))
+    done
+    [[ "$any" -eq 0 ]] && exit 0
+    [[ "$sig_fail" -gt 0 ]] && exit 1
+    exit 0
+  fi
+
+  ok=0
+  while IFS= read -r rid; do
+    [[ "$rid" == "$target" ]] && ok=1
+  done < <(mpm_registry_list)
+  if [[ "$ok" -eq 1 ]]; then
+    mpm_source_scope "$target"
+    cur=$(mpm_get_current_preset "$target")
+    if [[ -z "$cur" ]]; then
+      echo "mpm: [${target}] skip test: no inferred preset" >&2
+      exit 0
+    fi
+    any=1
+    set +e
+    "mpm_scope_${target}_test_preset" "$cur"
+    r=$?
+    set -e
+    [[ "$r" -ne 0 ]] && sig_fail=$((sig_fail + 1))
+    [[ "$sig_fail" -gt 0 ]] && exit 1
+    exit 0
+  fi
+
+  echo "mpm: test unknown target (group id / scope / scope/preset): ${target}" >&2
+  exit 1
+}
+
+main() {
+  [[ $# -eq 0 ]] && {
+    mpm_help
+    exit 1
+  }
+
+  if [[ "$1" == "--help" ]]; then
+    mpm_help
+    exit 0
+  fi
+
+  if [[ "$1" == "--list-scopes" ]]; then
+    mpm_list_scopes_cmd
+    exit 0
+  fi
+
+  local args=()
+  local a
+  MPM_JSON=0
+  MPM_EXPORT_SHELL_ENV="${MPM_EXPORT_SHELL_ENV:-0}"
+  for a in "$@"; do
+    if [[ "$a" == --scopes=* ]]; then
+      MPM_SCOPES_CSV="${a#--scopes=}"
+    elif [[ "$a" == "--json" ]]; then
+      MPM_JSON=1
+    elif [[ "$a" == "--export-shell-env" ]]; then
+      MPM_EXPORT_SHELL_ENV=1
+    else
+      args+=("$a")
+    fi
+  done
+  set -- "${args[@]}"
+
+  local verb=${1:-}
+  [[ -n "$verb" ]] || {
+    mpm_help
+    exit 1
+  }
+  shift
+
+  case "$verb" in
+    use)
+      mpm_use_cmd "${1:-}" "${MPM_SCOPES_CSV:-}"
+      ;;
+    current)
+      mpm_current_cmd "${MPM_SCOPES_CSV:-}" "${1:-}"
+      ;;
+    ls)
+      mpm_ls_cmd "${MPM_SCOPES_CSV:-}"
+      ;;
+    test)
+      mpm_test_cmd "${1:-}" "${MPM_SCOPES_CSV:-}"
+      ;;
+    shell-env)
+      mpm_shell_env_cmd "${MPM_SCOPES_CSV:-}"
+      ;;
+    *)
+      echo "mpm: unknown verb: ${verb} (ls | use | current | test | shell-env | --list-scopes; see mpm --help)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
