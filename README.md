@@ -4,9 +4,13 @@
 
 ## Overview
 
-**mpm** wires a single local HTTP(S) or SOCKS proxy (for example [mihomo](https://github.com/MetaCubeX/mihomo) on `http://127.0.0.1:7890`) into **shell**, **Docker**, **k3s**, and **Go-related** outbound paths on Linux—using one **group** from `share/profiles/groups.yaml`, or a single **`scope/preset`**, **without** editing your application repository.
+**mpm** is a multi-environment proxy manager for Linux.
 
-The CLI uses top-level verbs only (`use`, `current`, `ls`, `test`). See **`mpm --help`** and [mpm/doc/mpm-prd.md](doc/mpm-prd.md) for the full contract.
+It lets you switch and apply one local HTTP(S)/SOCKS proxy across shell, Docker, k3s, Go, and other development environments using reusable YAML preset groups — without manually editing scattered configs.
+
+Inspired by tools like **nrm** / **yrm**, **mpm** provides simple commands for consistent proxy management across your system.
+
+The CLI uses top-level verbs only (`use`, `current`, `ls`, `test`). See **`mpm --help`** for subcommands, options, and behavior.
 
 ## Install
 
@@ -18,13 +22,13 @@ The CLI uses top-level verbs only (`use`, `current`, `ls`, `test`). See **`mpm -
 - **curl** — required for `mpm test`.
 - **sudo** for scopes that write under `/etc` (**docker**, **k3s**).
 
-### Install methods
-
 The installer installs **yq**, **jq**, and **curl** when missing. Default prefix is **`$HOME/.local`** (usually no root).
 
-#### One-shot install
+### One-shot install
 
 Clone the repository and run **install.sh** (from any directory).
+
+If **Git is unavailable** on the install machine (or `git clone` is blocked), download a source snapshot instead — for example **Code → Download ZIP** on the GitHub repository page — unpack it, `cd` into the extracted folder (next to **install.sh**, **`bin/mpm`**, **`lib/`**, **`share/`**), and run **`bash install.sh`** with the same flags as below.
 
 **User-level** (install under the current user, default **`$HOME/.local`**, no root):
 
@@ -50,42 +54,16 @@ git clone https://github.com/maitou/mpm.git && cd mpm && sudo bash install.sh --
 git clone https://github.com/maitou/mpm.git && cd mpm && sudo bash install.sh --prefix=/usr/local --download-source=cn
 ```
 
-#### Already have the repo
-
-If you already have a local copy, run **`bash install.sh`** at the repository root (alongside **install.sh**, **`bin/mpm`**, **`lib/`**, **`share/`**). The script installs missing dependencies automatically.
-
-**User-level**:
-
-```bash
-# Default
-cd /path/to/mpm && bash install.sh
-```
-
-```bash
-# Mainland China
-cd /path/to/mpm && bash install.sh --download-source=cn
-```
-
-**System-wide**:
-
-```bash
-# Default
-cd /path/to/mpm && sudo bash install.sh --prefix=/usr/local
-```
-
-```bash
-# Mainland China
-cd /path/to/mpm && sudo bash install.sh --prefix=/usr/local --download-source=cn
-```
-
 If you used the default prefix, ensure **`$HOME/.local/bin`** is on **`PATH`** (e.g. `export PATH="$HOME/.local/bin:$PATH"`), then run **`mpm --help`**. For a non-default prefix, add that prefix’s **`bin`** directory to **`PATH`** instead.
 
 ### Optional: mihomo systemd unit
 
-To install a mihomo release archive and register **systemd** (separate from `mpm` CLI), use the script at the repo root:
+To install a mihomo release archive and register **systemd** (separate from `mpm` CLI), use the script at the repo root.
+
+On the mihomo **Linux** release assets, pick the **`.gz`** that matches your CPU architecture (for example **amd64** for typical x86_64 PCs and VMs, **arm64** for many ARM servers and Apple-silicon Linux VMs, **armv7** for older 32-bit ARM boards). Filenames follow `mihomo-linux-<arch>-<version>.gz`; download the one that fits your machine, then pass its path to the script (replace the placeholder below with your real file):
 
 ```bash
-sudo ./install_mihomo_service.sh /path/to/mihomo-linux-amd64-*.gz
+sudo ./install_mihomo_service.sh /path/to/mihomo-linux-*.gz
 ```
 
 ## Usage examples
