@@ -65,6 +65,13 @@ mpm_require_yq() {
   return 1
 }
 
+# shellcheck source=resolvers/default_ip.sh
+source "${MPM_PREFIX}/lib/resolvers/default_ip.sh"
+# shellcheck source=resolvers/host_ip.sh
+source "${MPM_PREFIX}/lib/resolvers/host_ip.sh"
+# shellcheck source=template.sh
+source "${MPM_PREFIX}/lib/template.sh"
+
 mpm_groups_yaml() {
   printf '%s' "${MPM_SHARE_PROFILES}/groups.yaml"
 }
@@ -132,6 +139,22 @@ mpm_preset_has() {
     return 1
   fi
   yq -e "has(\"${preset}\")" "$f" >/dev/null 2>&1
+}
+
+# Resolve preset field; expand ${VAR} for proxy URL fields only.
+mpm_preset_resolve_field() {
+  local scope=$1 preset=$2 yqpath=$3 raw basepath
+  raw=$(mpm_preset_yq "$scope" "$preset" "$yqpath") || return 1
+  [[ "$raw" == "null" ]] && raw=""
+  basepath=${yqpath%% *}
+  case "$basepath" in
+    .http_proxy | .https_proxy | .all_proxy)
+      mpm_template_expand "$raw" "$scope" "$preset"
+      ;;
+    *)
+      printf '%s' "$raw"
+      ;;
+  esac
 }
 
 # Backup before write; prints backup path on stdout when created.
@@ -305,11 +328,11 @@ mpm_emit_proxy_exports_sh() {
     mpm_emit_proxy_unsets_sh
     return 0
   }
-  hp=$(mpm_preset_yq "$sc" "$pid" '.http_proxy // ""') || return 1
+  hp=$(mpm_preset_resolve_field "$sc" "$pid" '.http_proxy // ""') || return 1
   [[ "$hp" == "null" ]] && hp=""
-  hs=$(mpm_preset_yq "$sc" "$pid" '.https_proxy // ""') || return 1
+  hs=$(mpm_preset_resolve_field "$sc" "$pid" '.https_proxy // ""') || return 1
   [[ "$hs" == "null" ]] && hs=""
-  ap=$(mpm_preset_yq "$sc" "$pid" '.all_proxy // ""') || return 1
+  ap=$(mpm_preset_resolve_field "$sc" "$pid" '.all_proxy // ""') || return 1
   [[ "$ap" == "null" ]] && ap=""
   np=$(mpm_preset_yq "$sc" "$pid" '.no_proxy // ""') || return 1
   [[ "$np" == "null" ]] && np=""

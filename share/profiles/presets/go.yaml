@@ -2,9 +2,9 @@
 # no_proxy: align with private networks + typical in-cluster paths when using GOPRIVATE-style hosts.
 proxy:
   summary: "Shell HTTP(S)_PROXY only; no GOPROXY"
-  http_proxy: "http://127.0.0.1:7890"
-  https_proxy: "http://127.0.0.1:7890"
-  all_proxy: "socks5://127.0.0.1:7890"
+  http_proxy: "http://${DEFAULT_IP}:7890"
+  https_proxy: "http://${DEFAULT_IP}:7890"
+  all_proxy: "socks5://${DEFAULT_IP}:7890"
   no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
   probe: "https://www.google.com/generate_204"
 

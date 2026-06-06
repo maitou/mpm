@@ -12,6 +12,10 @@ mpm_scope_shell_requires_root() {
   echo 0
 }
 
+mpm_scope_shell_resolve_gateway_ip() {
+  mpm_resolve_default_ip
+}
+
 mpm_scope_shell_rc() {
   echo "${HOME}/.bashrc"
 }
@@ -35,9 +39,9 @@ mpm_scope_shell__block_body_from_preset() {
   local preset=$1
   mpm_require_yq || return 1
   local hp hs ap np
-  hp=$(mpm_preset_yq shell "$preset" '.http_proxy') || return 1
-  hs=$(mpm_preset_yq shell "$preset" '.https_proxy') || return 1
-  ap=$(mpm_preset_yq shell "$preset" '.all_proxy') || return 1
+  hp=$(mpm_preset_resolve_field shell "$preset" '.http_proxy') || return 1
+  hs=$(mpm_preset_resolve_field shell "$preset" '.https_proxy') || return 1
+  ap=$(mpm_preset_resolve_field shell "$preset" '.all_proxy') || return 1
   np=$(mpm_preset_yq shell "$preset" '.no_proxy') || return 1
   [[ "$hp" == "null" ]] && hp=""
   [[ "$hs" == "null" ]] && hs=""
@@ -92,7 +96,7 @@ mpm_scope_shell__infer_preset_from_file() {
   inner=$(mpm_scope_shell__extract_block_inner "$file")
   while IFS= read -r pid; do
     [[ -z "$pid" || "$pid" == "null" || "$pid" == "direct" ]] && continue
-    want=$(mpm_preset_yq shell "$pid" '.http_proxy' 2>/dev/null) || continue
+    want=$(mpm_preset_resolve_field shell "$pid" '.http_proxy' 2>/dev/null) || continue
     [[ "$want" == "null" ]] && want=""
     hp=$(mpm_scope_shell__value_from_exports "$inner" "http_proxy")
     if [[ "$hp" == "$want" && -n "$want" ]]; then
@@ -262,11 +266,11 @@ mpm_scope_shell_test_preset() {
   mpm_require_yq || return 1
   probe=$(mpm_preset_yq shell "$preset" '.probe // ""')
   [[ "$probe" == "null" ]] && probe=""
-  hp=$(mpm_preset_yq shell "$preset" '.http_proxy // ""')
+  hp=$(mpm_preset_resolve_field shell "$preset" '.http_proxy // ""')
   [[ "$hp" == "null" ]] && hp=""
-  hs=$(mpm_preset_yq shell "$preset" '.https_proxy // ""')
+  hs=$(mpm_preset_resolve_field shell "$preset" '.https_proxy // ""')
   [[ "$hs" == "null" ]] && hs=""
-  ap=$(mpm_preset_yq shell "$preset" '.all_proxy // ""')
+  ap=$(mpm_preset_resolve_field shell "$preset" '.all_proxy // ""')
   [[ "$ap" == "null" ]] && ap=""
   np=$(mpm_preset_yq shell "$preset" '.no_proxy // ""')
   [[ "$np" == "null" ]] && np=""

@@ -12,6 +12,29 @@ mpm_scope_k3s_requires_root() {
   echo 1
 }
 
+mpm_scope_k3s_resolve_gateway_ip() {
+  local gw
+  if command -v ip >/dev/null 2>&1; then
+    gw=$(ip -4 addr show cni0 2>/dev/null | awk '/inet / { print $2 }' | cut -d/ -f1 | head -1)
+    if [[ -n "$gw" ]]; then
+      printf '%s' "$gw"
+      return 0
+    fi
+    gw=$(ip -4 addr show flannel.1 2>/dev/null | awk '/inet / { print $2 }' | cut -d/ -f1 | head -1)
+    if [[ -n "$gw" ]]; then
+      printf '%s' "$gw"
+      return 0
+    fi
+    gw=$(ip -4 route show dev cni0 2>/dev/null | awk '/^default / { print $3; exit }')
+    if [[ -n "$gw" ]]; then
+      printf '%s' "$gw"
+      return 0
+    fi
+  fi
+  echo "mpm(k3s): cannot resolve GATEWAY_IP (check cni0/flannel.1; CNI must exist)" >&2
+  return 1
+}
+
 mpm_scope_k3s__unit_fragment_dir() {
   local unit=$1
   echo "/etc/systemd/system/${unit}.d"
@@ -35,9 +58,9 @@ mpm_scope_k3s__unit_exists() {
 mpm_scope_k3s__read_proxy_fields() {
   local preset=$1
   mpm_require_yq || return 1
-  MPM_K3S_HP=$(mpm_preset_yq k3s "$preset" '.http_proxy') || return 1
-  MPM_K3S_HS=$(mpm_preset_yq k3s "$preset" '.https_proxy') || return 1
-  MPM_K3S_AP=$(mpm_preset_yq k3s "$preset" '.all_proxy') || return 1
+  MPM_K3S_HP=$(mpm_preset_resolve_field k3s "$preset" '.http_proxy') || return 1
+  MPM_K3S_HS=$(mpm_preset_resolve_field k3s "$preset" '.https_proxy') || return 1
+  MPM_K3S_AP=$(mpm_preset_resolve_field k3s "$preset" '.all_proxy') || return 1
   MPM_K3S_NP=$(mpm_preset_yq k3s "$preset" '.no_proxy') || return 1
   [[ "$MPM_K3S_HP" == "null" ]] && MPM_K3S_HP=""
   [[ "$MPM_K3S_HS" == "null" ]] && MPM_K3S_HS=""
@@ -328,22 +351,60 @@ mpm_scope_k3s__inferred_preset() {
   printf '%s' "$pr"
 }
 
-# Pull a tiny Hub image; prefer k3s crictl (CRI), then containerd ctr namespaces.
+# k3s crictl/ctr need access to /run/k3s/containerd/containerd.sock (root or sudo).
+mpm_scope_k3s__run_k3s() {
+  if mpm_is_root; then
+    k3s "$@"
+  else
+    sudo k3s "$@"
+  fi
+}
+
+# timeout(1) cannot invoke shell functions; run k3s with optional time limit.
+mpm_scope_k3s__timeout_run() {
+  local seconds=$1
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    if mpm_is_root; then
+      timeout "$seconds" k3s "$@"
+    else
+      timeout "$seconds" sudo k3s "$@"
+    fi
+  else
+    mpm_scope_k3s__run_k3s "$@"
+  fi
+}
+
+mpm_scope_k3s__crictl_usable() {
+  command -v k3s >/dev/null 2>&1 || return 1
+  mpm_scope_k3s__run_k3s crictl info >/dev/null 2>&1
+}
+
+# Remove probe image so the next pull always hits the registry (not local cache).
+mpm_scope_k3s__remove_smoke_image() {
+  local ref=$1
+  mpm_scope_k3s__run_k3s crictl rmi "$ref" >/dev/null 2>&1 || true
+  mpm_scope_k3s__run_k3s ctr -n k8s.io images rm "$ref" >/dev/null 2>&1 || true
+  mpm_scope_k3s__run_k3s ctr images rm "$ref" >/dev/null 2>&1 || true
+}
+
+# Pull hello-world; prefer k3s crictl (CRI), then containerd ctr namespaces.
 mpm_scope_k3s__live_pull_smoke() {
   local ref=$1 log rc
   log=$(mktemp)
   : >"$log"
-  if command -v k3s >/dev/null 2>&1 && k3s crictl info >/dev/null 2>&1; then
+  mpm_scope_k3s__remove_smoke_image "$ref"
+  if ! mpm_is_root; then
+    echo "mpm(k3s-test): not root; using sudo for k3s crictl/ctr (containerd socket)" >&2
+  fi
+  if mpm_scope_k3s__crictl_usable; then
     echo "mpm(k3s-test): trying k3s crictl pull ${ref}" >&2
     set +e
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 180 k3s crictl pull "$ref" >>"$log" 2>&1
-    else
-      k3s crictl pull "$ref" >>"$log" 2>&1
-    fi
+    mpm_scope_k3s__timeout_run 180 crictl pull "$ref" >>"$log" 2>&1
     rc=$?
     set -e
     if [[ "$rc" -eq 0 ]]; then
+      mpm_scope_k3s__remove_smoke_image "$ref"
       rm -f "$log"
       return 0
     fi
@@ -363,14 +424,11 @@ mpm_scope_k3s__live_pull_smoke() {
     return 1
   fi
   set +e
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 180 k3s ctr -n k8s.io images pull "$ref" >>"$log" 2>&1
-  else
-    k3s ctr -n k8s.io images pull "$ref" >>"$log" 2>&1
-  fi
+  mpm_scope_k3s__timeout_run 180 ctr -n k8s.io images pull "$ref" >>"$log" 2>&1
   rc=$?
   set -e
   if [[ "$rc" -eq 0 ]]; then
+    mpm_scope_k3s__remove_smoke_image "$ref"
     rm -f "$log"
     return 0
   fi
@@ -381,14 +439,11 @@ mpm_scope_k3s__live_pull_smoke() {
     return 1
   fi
   set +e
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 180 k3s ctr images pull "$ref" >>"$log" 2>&1
-  else
-    k3s ctr images pull "$ref" >>"$log" 2>&1
-  fi
+  mpm_scope_k3s__timeout_run 180 ctr images pull "$ref" >>"$log" 2>&1
   rc=$?
   set -e
   if [[ "$rc" -eq 0 ]]; then
+    mpm_scope_k3s__remove_smoke_image "$ref"
     rm -f "$log"
     return 0
   fi
@@ -398,13 +453,16 @@ mpm_scope_k3s__live_pull_smoke() {
     echo "mpm(k3s-test): FAIL k3s ctr images pull ${ref} (exit ${rc})" >&2
   fi
   tail -n 25 "$log" >&2 || true
+  if grep -qiE 'permission denied|connect: permission denied' "$log" 2>/dev/null; then
+    echo "mpm(k3s-test): hint: live pull needs root; use: sudo mpm test k3s" >&2
+  fi
   rm -f "$log"
   return 1
 }
 
 mpm_scope_k3s__test_preset_live() {
   local preset=$1 img
-  img="docker.io/library/alpine:3.19"
+  img="docker.io/library/hello-world:latest"
   echo "mpm(k3s-test): ${preset} matches inferred → live pull ${img} (crictl then ctr; uses k3s systemd proxy env)" >&2
   if ! command -v k3s >/dev/null 2>&1; then
     echo "mpm(k3s-test): k3s not on PATH; install K3s or add it to PATH for live pull test" >&2
@@ -417,7 +475,7 @@ mpm_scope_k3s__test_preset_live() {
 mpm_scope_k3s_test_preset() {
   local preset=$1 inferred hp probe target
   mpm_require_yq || return 1
-  hp=$(mpm_preset_yq k3s "$preset" '.http_proxy // ""')
+  hp=$(mpm_preset_resolve_field k3s "$preset" '.http_proxy // ""')
   [[ "$hp" == "null" ]] && hp=""
   probe=$(mpm_preset_yq k3s "$preset" '.probe // ""')
   [[ "$probe" == "null" ]] && probe=""

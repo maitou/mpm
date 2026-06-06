@@ -13,6 +13,10 @@ mpm_scope_go_requires_root() {
   echo 0
 }
 
+mpm_scope_go_resolve_gateway_ip() {
+  mpm_resolve_default_ip
+}
+
 mpm_scope_go_rc() {
   echo "${HOME}/.bashrc"
 }
@@ -35,7 +39,7 @@ mpm_scope_go__infer_from_bashrc() {
   ' "$f")
   while IFS= read -r pid; do
     [[ -z "$pid" || "$pid" == "null" || "$pid" == "direct" ]] && continue
-    want=$(mpm_preset_yq go "$pid" '.http_proxy' 2>/dev/null) || continue
+    want=$(mpm_preset_resolve_field go "$pid" '.http_proxy' 2>/dev/null) || continue
     [[ "$want" == "null" ]] && want=""
     hp=""
     while IFS= read -r line; do
@@ -196,11 +200,11 @@ mpm_scope_go__git_ls_remote_smoke() {
 
 mpm_scope_go__test_preset_live() {
   local preset=$1 hp hs ap np
-  hp=$(mpm_preset_yq go "$preset" '.http_proxy // ""')
+  hp=$(mpm_preset_resolve_field go "$preset" '.http_proxy // ""')
   [[ "$hp" == "null" ]] && hp=""
-  hs=$(mpm_preset_yq go "$preset" '.https_proxy // ""')
+  hs=$(mpm_preset_resolve_field go "$preset" '.https_proxy // ""')
   [[ "$hs" == "null" ]] && hs=""
-  ap=$(mpm_preset_yq go "$preset" '.all_proxy // ""')
+  ap=$(mpm_preset_resolve_field go "$preset" '.all_proxy // ""')
   [[ "$ap" == "null" ]] && ap=""
   np=$(mpm_preset_yq go "$preset" '.no_proxy // ""')
   [[ "$np" == "null" ]] && np=""
@@ -211,11 +215,11 @@ mpm_scope_go__test_preset_live() {
 mpm_scope_go_test_preset() {
   local preset=$1 inferred hp probe target hs ap np
   mpm_require_yq || return 1
-  hp=$(mpm_preset_yq go "$preset" '.http_proxy // ""')
+  hp=$(mpm_preset_resolve_field go "$preset" '.http_proxy // ""')
   [[ "$hp" == "null" ]] && hp=""
-  hs=$(mpm_preset_yq go "$preset" '.https_proxy // ""')
+  hs=$(mpm_preset_resolve_field go "$preset" '.https_proxy // ""')
   [[ "$hs" == "null" ]] && hs=""
-  ap=$(mpm_preset_yq go "$preset" '.all_proxy // ""')
+  ap=$(mpm_preset_resolve_field go "$preset" '.all_proxy // ""')
   [[ "$ap" == "null" ]] && ap=""
   np=$(mpm_preset_yq go "$preset" '.no_proxy // ""')
   [[ "$np" == "null" ]] && np=""

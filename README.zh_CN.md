@@ -98,10 +98,27 @@ mpm test proxy-group --scopes=shell
 | `k3s`    | `k3s.service` / `k3s-agent.service` 的 systemd drop-in（若存在） | 是 |
 | `go`     | MVP 不写独立文件；依赖 **shell** 导出供 git 模块等使用 | 否 |
 
+## Preset 模板变量
+
+`share/profiles/presets/*.yaml` 中 `http_proxy` / `https_proxy` / `all_proxy` 支持：
+
+- **字面量**：`http://127.0.0.1:7890`（不含 `${` 则不替换）
+- **内置变量**：`${DEFAULT_IP}`（127.0.0.1）、`${HOST_IP}`（宿主机 LAN IP）、`${GATEWAY_IP}`（按作用域解析）
+- **自定义参数**：preset 内 `params.PROXY_PORT` 等，用于 `${PROXY_PORT}`
+
+| 作用域 | 推荐变量 |
+|--------|----------|
+| `shell` / `go` | `${DEFAULT_IP}` |
+| `docker` / `k3s` | `${GATEWAY_IP}` |
+
+`k3s` 的 `GATEWAY_IP` 取自 **CNI**（`cni0` / `flannel.1`）。非 loopback 客户端访问 mihomo 时须开启 **allow-lan** 并监听 `0.0.0.0:7890`。
+
+单元测试：`tests/template_test.sh`
+
 ## 行为说明
 
 - **多作用域 `use`**：尽力而为；若部分失败、部分成功，退出码为 **3**。
-- **幂等 `use`**：各作用域在写入前比对磁盘上的目标 preset 内容。
+- **幂等 `use`**：各作用域在写入前比对磁盘上的目标 preset 内容（比对的是**解析后**的 URL）。
 
 ## 非目标
 

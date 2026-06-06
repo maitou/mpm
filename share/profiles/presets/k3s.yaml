@@ -1,9 +1,9 @@
 # no_proxy: k3s default pod CIDR (Flannel) + service CIDR + in-cluster names; adjust if your cluster uses different CIDRs.
 proxy:
   summary: "HTTP(S) proxy env for k3s systemd units (drop-in)"
-  http_proxy: "http://127.0.0.1:7890"
-  https_proxy: "http://127.0.0.1:7890"
-  all_proxy: "socks5://127.0.0.1:7890"
+  http_proxy: "http://${GATEWAY_IP}:7890"
+  https_proxy: "http://${GATEWAY_IP}:7890"
+  all_proxy: "socks5://${GATEWAY_IP}:7890"
   no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
   restart_units:
     - k3s.service

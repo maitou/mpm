@@ -100,10 +100,27 @@ mpm test proxy-group --scopes=shell
 | `k3s`   | systemd drop-ins for `k3s.service` / `k3s-agent.service` (if present) | yes |
 | `go`    | No separate file writes in MVP; relies on **shell** exports for git-backed modules | no |
 
+## Preset template variables
+
+In `share/profiles/presets/*.yaml`, `http_proxy` / `https_proxy` / `all_proxy` support:
+
+- **Literals** (no `${` → no substitution)
+- **Built-ins**: `${DEFAULT_IP}`, `${HOST_IP}`, `${GATEWAY_IP}` (scope-specific gateway resolver)
+- **Custom `params`**: e.g. `params.PROXY_PORT` for `${PROXY_PORT}`
+
+| Scope | Typical choice |
+|-------|----------------|
+| `shell` / `go` | `${DEFAULT_IP}` |
+| `docker` / `k3s` | `${GATEWAY_IP}` |
+
+For `k3s`, `GATEWAY_IP` uses the **CNI** bridge (`cni0` / `flannel.1`). Non-loopback clients need mihomo **allow-lan** and `0.0.0.0:7890`.
+
+Run: `tests/template_test.sh`
+
 ## Behavior notes
 
 - **Multi-scope `use`**: best-effort; exit code **3** if some scopes fail after others succeeded.
-- **Idempotent `use`**: each scope compares on-disk content to the target preset before writing.
+- **Idempotent `use`**: each scope compares on-disk content to the **resolved** target preset before writing.
 
 ## Out of scope
 

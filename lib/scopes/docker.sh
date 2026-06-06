@@ -12,6 +12,26 @@ mpm_scope_docker_requires_root() {
   echo 1
 }
 
+mpm_scope_docker_resolve_gateway_ip() {
+  local gw
+  if command -v docker >/dev/null 2>&1; then
+    gw=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+    if [[ -n "$gw" && "$gw" != "<no value>" ]]; then
+      printf '%s' "$gw"
+      return 0
+    fi
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    gw=$(ip -4 addr show docker0 2>/dev/null | awk '/inet / { print $2 }' | cut -d/ -f1 | head -1)
+    if [[ -n "$gw" ]]; then
+      printf '%s' "$gw"
+      return 0
+    fi
+  fi
+  echo "mpm(docker): cannot resolve GATEWAY_IP (bridge gateway / docker0)" >&2
+  return 1
+}
+
 mpm_scope_docker_dropin() {
   echo "/etc/systemd/system/docker.service.d/mpm-proxy.conf"
 }
@@ -23,9 +43,9 @@ mpm_scope_docker_envfile() {
 mpm_scope_docker__read_proxy_fields() {
   local preset=$1
   mpm_require_yq || return 1
-  MPM_DOCKER_HP=$(mpm_preset_yq docker "$preset" '.http_proxy') || return 1
-  MPM_DOCKER_HS=$(mpm_preset_yq docker "$preset" '.https_proxy') || return 1
-  MPM_DOCKER_AP=$(mpm_preset_yq docker "$preset" '.all_proxy') || return 1
+  MPM_DOCKER_HP=$(mpm_preset_resolve_field docker "$preset" '.http_proxy') || return 1
+  MPM_DOCKER_HS=$(mpm_preset_resolve_field docker "$preset" '.https_proxy') || return 1
+  MPM_DOCKER_AP=$(mpm_preset_resolve_field docker "$preset" '.all_proxy') || return 1
   MPM_DOCKER_NP=$(mpm_preset_yq docker "$preset" '.no_proxy') || return 1
   [[ "$MPM_DOCKER_HP" == "null" ]] && MPM_DOCKER_HP=""
   [[ "$MPM_DOCKER_HS" == "null" ]] && MPM_DOCKER_HS=""
@@ -286,9 +306,15 @@ mpm_scope_docker__inferred_preset() {
   printf '%s' "$pr"
 }
 
-# Live Engine smoke: pull a small Hub image (uses systemd proxy env when mpm-managed preset is active).
+# Remove probe image so the next pull always hits the registry (not local cache).
+mpm_scope_docker__remove_probe_image() {
+  local ref=$1
+  DOCKER_CONTENT_TRUST=0 docker rmi -f "$ref" >/dev/null 2>&1 || true
+}
+
+# Live Engine smoke: pull hello-world (uses systemd proxy env when mpm-managed preset is active).
 mpm_scope_docker__engine_probe() {
-  local ref="docker.io/library/busybox:1.36"
+  local ref="docker.io/library/hello-world:latest"
   command -v docker >/dev/null 2>&1 || {
     echo "mpm(docker-test): docker CLI not found; install Docker client to validate Engine." >&2
     return 1
@@ -305,6 +331,7 @@ mpm_scope_docker__engine_probe() {
     set -e
     return 1
   fi
+  mpm_scope_docker__remove_probe_image "$ref"
   echo "mpm(docker-test): docker pull -q ${ref} (daemon uses mpm drop-in proxy env when active)" >&2
   local rc
   if command -v timeout >/dev/null 2>&1; then
@@ -325,6 +352,7 @@ mpm_scope_docker__engine_probe() {
     echo "mpm(docker-test): FAIL docker pull ${ref} (exit ${rc}); check proxy and registry reachability" >&2
     return 1
   fi
+  mpm_scope_docker__remove_probe_image "$ref"
   printf 'docker/proxy: OK (Engine docker pull %s)\n' "$ref"
   return 0
 }
@@ -338,7 +366,7 @@ mpm_scope_docker__test_preset_live() {
 mpm_scope_docker_test_preset() {
   local preset=$1 inferred hp probe target
   mpm_require_yq || return 1
-  hp=$(mpm_preset_yq docker "$preset" '.http_proxy // ""')
+  hp=$(mpm_preset_resolve_field docker "$preset" '.http_proxy // ""')
   [[ "$hp" == "null" ]] && hp=""
   probe=$(mpm_preset_yq docker "$preset" '.probe // ""')
   [[ "$probe" == "null" ]] && probe=""
