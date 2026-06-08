@@ -42,7 +42,7 @@ mpm_scope_shell__block_body_from_preset() {
   hp=$(mpm_preset_resolve_field shell "$preset" '.http_proxy') || return 1
   hs=$(mpm_preset_resolve_field shell "$preset" '.https_proxy') || return 1
   ap=$(mpm_preset_resolve_field shell "$preset" '.all_proxy') || return 1
-  np=$(mpm_preset_yq shell "$preset" '.no_proxy') || return 1
+  np=$(mpm_preset_resolve_field shell "$preset" '.no_proxy') || return 1
   [[ "$hp" == "null" ]] && hp=""
   [[ "$hs" == "null" ]] && hs=""
   [[ "$ap" == "null" ]] && ap=""
@@ -272,7 +272,7 @@ mpm_scope_shell_test_preset() {
   [[ "$hs" == "null" ]] && hs=""
   ap=$(mpm_preset_resolve_field shell "$preset" '.all_proxy // ""')
   [[ "$ap" == "null" ]] && ap=""
-  np=$(mpm_preset_yq shell "$preset" '.no_proxy // ""')
+  np=$(mpm_preset_resolve_field shell "$preset" '.no_proxy // ""')
   [[ "$np" == "null" ]] && np=""
   if [[ "$preset" == "direct" ]] || [[ -z "$hp" ]]; then
     echo "mpm(shell-test): direct — skip proxy tunnel probe" >&2

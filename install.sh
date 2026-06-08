@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mpm installer: checks/installs deps (yq / jq / curl) and installs mpm into PREFIX/bin.
 #
-# See mpm_install_print_help (--help only); default PREFIX=$HOME/.local.
+# See mpm_install_print_help (--help only); default PREFIX=/usr/local.
 #
 # Idempotent: skips download/copy when PREFIX/bin/yq is valid and PREFIX/bin/mpm matches source.
 # Fail-fast: set -euo pipefail (except explicit test branches).
@@ -17,7 +17,7 @@ mpm_install_print_help() {
   cat <<'EOF'
 Usage: bash install.sh [--prefix=DIR] [--dry-run] [--download-source=upstream|cn]
 
-  --prefix=DIR              Install prefix (default: $HOME/.local); binaries in DIR/bin
+  --prefix=DIR              Install prefix (default: /usr/local); binaries in DIR/bin
   --dry-run                 Print actions only; do not write
   --download-source=SOURCE  Remote fetch policy for yq (default: upstream):
       upstream              Direct GitHub releases URLs
@@ -32,15 +32,14 @@ Usage: bash install.sh [--prefix=DIR] [--dry-run] [--download-source=upstream|cn
 Installs:
   - mpm executable -> PREFIX/bin/mpm
   - mpm data -> PREFIX/share/mpm/ (lib/, share/profiles/, etc. for MPM_PREFIX)
+  - Seeds /etc/mpm/overrides.yaml when installing to a system prefix (existing file kept)
   - Deps: mikefarah/yq (YAML), jq (--json / state.json), curl (mpm test)
-
-User-writable PREFIX usually needs no sudo; use sudo for /usr/local, etc.
 EOF
 }
 
 # Parse "$@" into PREFIX / DRY_RUN / MPM_DOWNLOAD_SOURCE; --help prints and exits 0.
 mpm_install_parse_args() {
-  PREFIX="${HOME}/.local"
+  PREFIX="/usr/local"
   DRY_RUN=0
   MPM_DOWNLOAD_SOURCE="${MPM_DOWNLOAD_SOURCE:-upstream}"
 
@@ -95,6 +94,64 @@ run() {
     return 0
   fi
   "$@"
+}
+
+mpm_install_is_root() {
+  [[ "${EUID:-0}" -eq 0 ]]
+}
+
+mpm_install_needs_sudo() {
+  mpm_install_is_root && return 1
+  local parent
+  parent=$(dirname "$PREFIX")
+  if [[ -w "$parent" ]] && { [[ ! -e "$PREFIX" ]] || [[ -w "$PREFIX" ]]; }; then
+    return 1
+  fi
+  return 0
+}
+
+mpm_install_seeds_system_overrides() {
+  case "$PREFIX" in
+    "$HOME/.local" | "$HOME"/.local/*) return 1 ;;
+    /usr/local | /usr/local/* | /usr/*) return 0 ;;
+  esac
+  mpm_install_needs_sudo
+}
+
+mpm_install_sudo_cache_credentials() {
+  mpm_install_is_root && return 0
+  if sudo -n -v 2>/dev/null; then
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    sudo -v
+    return $?
+  fi
+  echo "mpm-install: sudo credentials required (run: sudo -v, or configure NOPASSWD)" >&2
+  return 1
+}
+
+mpm_install_sudo() {
+  if mpm_install_is_root; then
+    "$@"
+    return $?
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '[dry-run] sudo' >&2
+    printf ' %q' "$@" >&2
+    printf '\n' >&2
+    return 0
+  fi
+  mpm_install_sudo_cache_credentials || return 1
+  sudo "$@"
+}
+
+run_priv() {
+  if mpm_install_needs_sudo; then
+    mpm_install_sudo "$@"
+  else
+    run "$@"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -246,7 +303,7 @@ install_yq_static() {
     return 1
   fi
 
-  mkdir -p "$BIN_DIR"
+  run_priv mkdir -p "$BIN_DIR"
   dest="${BIN_DIR}/yq"
   tmp=$(mktemp)
 
@@ -280,7 +337,7 @@ install_yq_static() {
     return 1
   fi
 
-  mv "$tmp" "$dest"
+  run_priv mv "$tmp" "$dest"
   log "installed yq (mikefarah) -> ${dest}"
 }
 
@@ -373,14 +430,14 @@ install_mpm_cli() {
     echo "mpm-install: not found: ${MPM_BIN_SRC}" >&2
     return 1
   }
-  mkdir -p "$BIN_DIR"
+  run_priv mkdir -p "$BIN_DIR"
   if [[ -f "${BIN_DIR}/mpm" ]] && cmp -s "$MPM_BIN_SRC" "${BIN_DIR}/mpm"; then
-    run chmod +x "${BIN_DIR}/mpm"
+    run_priv chmod +x "${BIN_DIR}/mpm"
     log "mpm matches ${MPM_BIN_SRC}; skip copy"
     return 0
   fi
-  run cp -f "$MPM_BIN_SRC" "${BIN_DIR}/mpm"
-  run chmod +x "${BIN_DIR}/mpm"
+  run_priv cp -f "$MPM_BIN_SRC" "${BIN_DIR}/mpm"
+  run_priv chmod +x "${BIN_DIR}/mpm"
   log "installed mpm -> ${BIN_DIR}/mpm"
 }
 
@@ -390,9 +447,31 @@ install_mpm_data() {
     echo "mpm-install: not found: ${MPM_ROOT}/lib or ${MPM_ROOT}/share" >&2
     return 1
   }
-  run mkdir -p "$MPM_DATA_DIR"
-  run cp -a "${MPM_ROOT}/lib" "${MPM_ROOT}/share" "${MPM_DATA_DIR}/"
+  run_priv mkdir -p "$MPM_DATA_DIR"
+  run_priv cp -a "${MPM_ROOT}/lib" "${MPM_ROOT}/share" "${MPM_DATA_DIR}/"
   log "synced mpm lib/ and share/ -> ${MPM_DATA_DIR}/"
+}
+
+install_system_overrides_seed() {
+  mpm_install_seeds_system_overrides || return 0
+  local dest=/etc/mpm/overrides.yaml
+  local src="${MPM_ROOT}/share/overrides.yaml"
+  [[ -f "$src" ]] || {
+    echo "mpm-install: overrides template missing: ${src}" >&2
+    return 1
+  }
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "[dry-run] would seed ${dest} from share/overrides.yaml (skip if exists)"
+    return 0
+  fi
+  run_priv mkdir -p /etc/mpm
+  if [[ -f "$dest" ]]; then
+    log "keeping existing ${dest}"
+    return 0
+  fi
+  run_priv cp -f "$src" "$dest"
+  run_priv chmod 0644 "$dest"
+  log "seeded ${dest}"
 }
 
 require_bash4() {
@@ -450,12 +529,17 @@ main() {
   log "mpm install prefix: PREFIX=${PREFIX} (bin: ${BIN_DIR})"
   mpm_install_log_yq_source
 
+  if [[ "$DRY_RUN" -eq 0 ]] && { mpm_install_needs_sudo || mpm_install_seeds_system_overrides; }; then
+    mpm_install_sudo_cache_credentials || exit 1
+  fi
+
   ensure_downloader
   ensure_yq
   ensure_jq
   ensure_curl
   install_mpm_data
   install_mpm_cli
+  install_system_overrides_seed
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "[dry-run] done; no files written"
@@ -469,9 +553,10 @@ main() {
   }
 
   log ""
-  log "install complete. Add to PATH if needed:"
-  log "  export PATH=\"${BIN_DIR}:\$PATH\""
-  log "then run: mpm --help"
+  log "install complete. Run: mpm --help"
+  if [[ "$PREFIX" != "/usr/local" ]]; then
+    log "Add to PATH if needed: export PATH=\"${BIN_DIR}:\$PATH\""
+  fi
 }
 
 mpm_install_parse_args "$@"

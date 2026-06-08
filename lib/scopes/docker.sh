@@ -46,7 +46,7 @@ mpm_scope_docker__read_proxy_fields() {
   MPM_DOCKER_HP=$(mpm_preset_resolve_field docker "$preset" '.http_proxy') || return 1
   MPM_DOCKER_HS=$(mpm_preset_resolve_field docker "$preset" '.https_proxy') || return 1
   MPM_DOCKER_AP=$(mpm_preset_resolve_field docker "$preset" '.all_proxy') || return 1
-  MPM_DOCKER_NP=$(mpm_preset_yq docker "$preset" '.no_proxy') || return 1
+  MPM_DOCKER_NP=$(mpm_preset_resolve_field docker "$preset" '.no_proxy') || return 1
   [[ "$MPM_DOCKER_HP" == "null" ]] && MPM_DOCKER_HP=""
   [[ "$MPM_DOCKER_HS" == "null" ]] && MPM_DOCKER_HS=""
   [[ "$MPM_DOCKER_AP" == "null" ]] && MPM_DOCKER_AP=""
@@ -162,17 +162,32 @@ mpm_scope_docker_get_state() {
 }
 
 mpm_scope_docker_restart() {
+  local reload restart
+  reload() {
+    if mpm_is_root; then
+      systemctl daemon-reload 2>/dev/null || true
+    else
+      mpm_sudo systemctl daemon-reload 2>/dev/null || true
+    fi
+  }
+  restart() {
+    if mpm_is_root; then
+      systemctl restart docker.service 2>/dev/null || systemctl restart docker 2>/dev/null
+    else
+      mpm_sudo systemctl restart docker.service 2>/dev/null || mpm_sudo systemctl restart docker 2>/dev/null
+    fi
+  }
   if systemctl is-active --quiet docker.service 2>/dev/null || systemctl is-active --quiet docker 2>/dev/null; then
     echo "mpm(docker): restarting docker.service…" >&2
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl restart docker.service 2>/dev/null || systemctl restart docker 2>/dev/null || {
+    reload
+    restart || {
       echo "mpm(docker): systemctl restart docker failed" >&2
       return 1
     }
     return 0
   fi
   echo "mpm(docker): docker.service not active; ran daemon-reload only." >&2
-  systemctl daemon-reload 2>/dev/null || true
+  reload
   return 0
 }
 
@@ -184,19 +199,22 @@ mpm_scope_docker__ensure_fragment_parent() {
     echo "mpm(docker): ${parent} exists but is not a directory; fix systemd layout or remove that path" >&2
     return 1
   fi
-  mkdir -p "$parent" || {
-    echo "mpm(docker): mkdir -p ${parent} failed (errno $?)" >&2
-    return 1
-  }
+  if mpm_needs_sudo_for_path "$d"; then
+    mpm_sudo mkdir -p "$parent" || {
+      echo "mpm(docker): mkdir -p ${parent} failed (errno $?)" >&2
+      return 1
+    }
+  else
+    mkdir -p "$parent" || {
+      echo "mpm(docker): mkdir -p ${parent} failed (errno $?)" >&2
+      return 1
+    }
+  fi
   return 0
 }
 
 mpm_scope_docker_apply_preset() {
   local preset=$1
-  mpm_is_root || {
-    echo "mpm(docker): root required to write $(mpm_scope_docker_dropin)" >&2
-    return 2
-  }
   mpm_require_yq || return 1
   mpm_preset_has docker "$preset" || {
     echo "mpm(docker): unknown preset: ${preset}" >&2
@@ -222,7 +240,11 @@ mpm_scope_docker_apply_preset() {
     fi
     [[ -f "$ef" ]] && mpm_backup_file "$ef" >/dev/null
     [[ -f "$d" ]] && mpm_backup_file "$d" >/dev/null
-    rm -f "$ef" "$d"
+    if mpm_needs_sudo_for_path "$ef"; then
+      mpm_sudo rm -f "$ef" "$d"
+    else
+      rm -f "$ef" "$d"
+    fi
     wrote=1
   else
     env_body=$(mpm_scope_docker__expected_env_body_for_preset "$preset") || {
@@ -249,28 +271,14 @@ mpm_scope_docker_apply_preset() {
   fi
     [[ -f "$ef" ]] && mpm_backup_file "$ef" >/dev/null
     [[ -f "$d" ]] && mpm_backup_file "$d" >/dev/null
-    if ! printf '%s\n' "$env_body" >"${ef}.tmp"; then
-      echo "mpm(docker): cannot write ${ef}.tmp" >&2
-      rm -f "${ef}.tmp"
+    mpm_write_file "$ef" "$env_body" || {
+      echo "mpm(docker): cannot write ${ef}" >&2
       return 1
-    fi
-    if ! mv "${ef}.tmp" "$ef"; then
-      echo "mpm(docker): cannot mv ${ef}.tmp -> ${ef}" >&2
-      rm -f "${ef}.tmp"
+    }
+    mpm_write_file "$d" "$conf_body" || {
+      echo "mpm(docker): cannot write ${d}" >&2
       return 1
-    fi
-    chmod 0644 "$ef" || true
-    if ! printf '%s\n' "$conf_body" >"${d}.tmp"; then
-      echo "mpm(docker): cannot write ${d}.tmp" >&2
-      rm -f "${d}.tmp"
-      return 1
-    fi
-    if ! mv "${d}.tmp" "$d"; then
-      echo "mpm(docker): cannot mv ${d}.tmp -> ${d}" >&2
-      rm -f "${d}.tmp"
-      return 1
-    fi
-    chmod 0644 "$d" || true
+    }
     wrote=1
   fi
   if [[ "$wrote" -eq 1 ]]; then

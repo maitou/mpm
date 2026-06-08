@@ -1,18 +1,35 @@
 # no_proxy: loopback + RFC1918 + typical k3s pod/service CIDR + in-cluster DNS suffixes (same-host dev).
-# Proxy URLs support ${DEFAULT_IP}, ${HOST_IP}, ${GATEWAY_IP} and optional params: (see README).
+# Proxy URLs support ${DEFAULT_IP}, ${HOST_IP}, ${GATEWAY_IP}, ${WSL_HOST_IP} and params PROXY_HOST/PROXY_PORT.
 proxy:
   summary: "Outbound HTTP(S) via local proxy (e.g. mihomo mixed port)"
-  http_proxy: "http://${DEFAULT_IP}:7890"
-  https_proxy: "http://${DEFAULT_IP}:7890"
-  all_proxy: "socks5://${DEFAULT_IP}:7890"
+  params:
+    PROXY_HOST: DEFAULT_IP
+    PROXY_PORT: "7890"
+  http_proxy: "http://${PROXY_HOST}:${PROXY_PORT}"
+  https_proxy: "http://${PROXY_HOST}:${PROXY_PORT}"
+  all_proxy: "socks5://${PROXY_HOST}:${PROXY_PORT}"
   no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
   probe: "https://www.google.com/generate_204"
 
 testparams:
+  internal: true
   summary: "Internal preset for unit tests (params expansion)"
   params:
+    PROXY_HOST: DEFAULT_IP
     PROXY_PORT: "9999"
-  http_proxy: "http://${DEFAULT_IP}:${PROXY_PORT}"
+  http_proxy: "http://${PROXY_HOST}:${PROXY_PORT}"
+  https_proxy: ""
+  all_proxy: ""
+  no_proxy: ""
+  probe: ""
+
+testhostref:
+  internal: true
+  summary: "Internal: PROXY_HOST references builtin token"
+  params:
+    PROXY_HOST: GATEWAY_IP
+    PROXY_PORT: "7890"
+  http_proxy: "http://${PROXY_HOST}:${PROXY_PORT}"
   https_proxy: ""
   all_proxy: ""
   no_proxy: ""

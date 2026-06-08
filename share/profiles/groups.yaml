@@ -1,11 +1,14 @@
 # scope_id -> preset_id (built-in proxy-group / direct-group)
+# Order matches MPM_SCOPE_REGISTRY: apt before shell (system apt proxy before shell env).
 proxy-group:
+  apt: proxy
   shell: proxy
   docker: proxy
   k3s: proxy
   go: proxy
 
 direct-group:
+  apt: direct
   shell: direct
   docker: direct
   k3s: direct

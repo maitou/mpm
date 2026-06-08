@@ -1,0 +1,47 @@
+# mpm system overrides template (install seeds /etc/mpm/overrides.yaml; edit with sudo)
+# Priority: scopes.<id> > defaults > built-in preset
+# proxy_host: builtin token (DEFAULT_IP, HOST_IP, GATEWAY_IP, WSL_HOST_IP) or literal IP/hostname
+# proxy_port: "1"–"65535"
+# no_proxy: full replacement string (not merged with preset)
+
+# defaults:
+#   proxy_host: DEFAULT_IP
+#   proxy_port: "7890"
+#   no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+# scopes:
+#   apt:
+#     proxy_host: DEFAULT_IP
+#     proxy_port: "7890"
+#     no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+#   shell:
+#     proxy_host: DEFAULT_IP
+#     proxy_port: "7890"
+#     no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
+#   go:
+#     proxy_host: DEFAULT_IP
+#     proxy_port: "7890"
+#     no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
+#   docker:
+#     proxy_host: GATEWAY_IP
+#     proxy_port: "7890"
+#     no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.docker.internal"
+#   k3s:
+#     proxy_host: GATEWAY_IP
+#     proxy_port: "7890"
+#     no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
+
+# WSL + Windows proxy (uncomment and adjust):
+# defaults:
+#   proxy_port: "10808"
+# scopes:
+#   apt:
+#     proxy_host: WSL_HOST_IP
+#   shell:
+#     proxy_host: WSL_HOST_IP
+#   go:
+#     proxy_host: WSL_HOST_IP
+#   docker:
+#     proxy_host: WSL_HOST_IP
+#   k3s:
+#     proxy_host: WSL_HOST_IP

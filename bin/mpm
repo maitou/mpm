@@ -48,6 +48,12 @@ Options:
                              (same as `mpm shell-env`) and send the status table to stderr, e.g.:
                              eval "$(mpm use shell/proxy --export-shell-env)"
 
+Local overrides (optional):
+  /etc/mpm/overrides.yaml       Default system overrides (seeded by install.sh).
+  MPM_OVERRIDES_FILE            Alternate overrides file (highest priority).
+  Priority: MPM_OVERRIDES_FILE > /etc/mpm/overrides.yaml > preset defaults.
+  See share/overrides.yaml. Builtin proxy_host tokens: DEFAULT_IP, HOST_IP, GATEWAY_IP, WSL_HOST_IP.
+
 Verbs:
   use TARGET             Apply proxy-group, direct-group, another group id from share/profiles/groups.yaml,
                            or SCOPE/PRESET (e.g. shell/proxy). Add --export-shell-env so the current shell
@@ -56,8 +62,9 @@ Verbs:
                            (must match --scopes when both are set).
   ls                     List groups (share/profiles/groups.yaml) and presets; `*` marks inferred current preset when known.
   test [TARGET]          Read-only checks (curl and/or live tools). When the tested preset matches the
-                           inferred on-disk preset and uses a proxy: shell/go use env-style curl or git;
-                           docker runs docker pull; k3s runs crictl/ctr pull. Otherwise curl --proxy only.
+                           inferred on-disk preset and uses a proxy: apt runs apt-get update; shell/go use
+                           env-style curl or git; docker runs docker pull; k3s runs crictl/ctr pull.
+                           Otherwise curl --proxy only.
                            TARGET: empty = each scope’s inferred preset; group = mapped presets per scope;
                            scope id = inferred preset; scope/preset = explicit preset.
   shell-env              Print sh export/unset lines for proxy-related scopes (shell, go) from inferred state.
@@ -72,13 +79,15 @@ Exit codes:
   0 success or all targeted scopes are confident no-ops; 1 invalid argv; 2 permission (root required);
   3 partial failure after best-effort (successful scopes are not rolled back).
 
-PRD (in-repo): mpm/doc/mpm-prd.md
-
 Rules:
   First argument must be ls|use|current|test|shell-env, or --help, or --list-scopes.
 
-Dependencies: yq for YAML; curl for test; jq optional (state.json). Use sudo mpm ... when docker/k3s need root;
-  yq lookup matches mrm: if not on PATH, try /usr/local/bin, /usr/bin, /snap, then SUDO_USER's ~/.local/bin, then HOME/.local/bin.
+Scope apply order (proxy-group / direct-group): apt → shell → docker → k3s → go (see lib/registry.sh).
+
+Dependencies: yq for YAML; curl for test; jq optional (state.json).
+  apt/docker/k3s scopes use internal sudo (run mpm as your user; sudo -v once when prompted).
+  Do not run sudo mpm for proxy-group (shell would write /root/.bashrc).
+  yq lookup: /usr/local/bin, /usr/bin, /snap, SUDO_USER ~/.local/bin, then HOME/.local/bin.
 EOF
 }
 
@@ -242,6 +251,9 @@ mpm_current_cmd() {
       v=${line#*=}
       case "$k" in preset) preset=$v ;; detail) detail=$v ;; esac
     done < <("mpm_scope_${id}_get_state" 2>/dev/null)
+    if suffix=$(mpm_runtime_override_format_detail_suffix "$id" 2>/dev/null); then
+      detail="${detail}${suffix}"
+    fi
     printf '%-10s %-18s %s\n' "$id" "${preset:--}" "${detail:--}"
   done
 }
@@ -262,8 +274,16 @@ mpm_current_json() {
       v=${line#*=}
       case "$k" in preset) preset=$v ;; detail) detail=$v ;; esac
     done < <("mpm_scope_${id}_get_state" 2>/dev/null)
-    jq -n --arg s "$id" --arg p "$preset" --arg d "$detail" \
-      '{scope:$s,preset:$p,detail:$d}' >>"$tmp"
+    if suffix=$(mpm_runtime_override_format_detail_suffix "$id" 2>/dev/null); then
+      detail="${detail}${suffix}"
+    fi
+    if ro=$(mpm_runtime_override_json_object "$id" 2>/dev/null); then
+      jq -n --arg s "$id" --arg p "$preset" --arg d "$detail" --argjson ro "$ro" \
+        '{scope:$s,preset:$p,detail:$d,runtime_override:$ro}' >>"$tmp"
+    else
+      jq -n --arg s "$id" --arg p "$preset" --arg d "$detail" \
+        '{scope:$s,preset:$p,detail:$d}' >>"$tmp"
+    fi
   done
   rows_json=$(jq -s '.' "$tmp")
   rm -f "$tmp"
@@ -293,17 +313,12 @@ mpm_use_bundle() {
     exit 1
   }
   mpm_active_scopes_fill "$scopes_csv"
+  if mpm_use_needs_sudo "${MPM_ACTIVE_SCOPES[@]}"; then
+    mpm_sudo_cache_credentials || exit 2
+  fi
   local id rc ok=0 fail=0 rootf=0 bp
   for id in "${MPM_ACTIVE_SCOPES[@]}"; do
     rc=0
-    local rr
-    rr=$(mpm_scope_requires_root "$id")
-    if [[ "$rr" == "1" ]] && ! mpm_is_root; then
-      echo "mpm: [${id}] root required; use: sudo mpm use ..." >&2
-      fail=$((fail + 1))
-      rootf=$((rootf + 1))
-      continue
-    fi
     mpm_source_scope "$id"
     bp=$(mpm_group_preset "$bundle" "$id" || true)
     set +e
@@ -356,9 +371,8 @@ mpm_use_scope_preset() {
   fi
   local rr
   rr=$(mpm_scope_requires_root "$scope")
-  if [[ "$rr" == "1" ]] && ! mpm_is_root; then
-    echo "mpm: [${scope}] root required" >&2
-    exit 2
+  if [[ "$rr" == "1" ]] && mpm_scope_needs_sudo "$scope"; then
+    mpm_sudo_cache_credentials || exit 2
   fi
   mpm_source_scope "$scope"
   set +e
@@ -626,6 +640,8 @@ main() {
     exit 1
   }
   shift
+
+  mpm_runtime_override_load_config || exit 1
 
   case "$verb" in
     use)

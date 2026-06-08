@@ -1,18 +1,22 @@
 # shellcheck shell=bash
-# Preset URL template expansion: ${DEFAULT_IP}, ${HOST_IP}, ${GATEWAY_IP}, optional preset params.
+# Preset URL template expansion: ${DEFAULT_IP}, ${HOST_IP}, ${GATEWAY_IP}, ${WSL_HOST_IP}, optional preset params.
 
 declare -gA MPM_TEMPLATE_MEMO=()
 
 mpm_template_builtin_names_csv() {
-  printf '%s' 'DEFAULT_IP,HOST_IP,GATEWAY_IP'
+  printf '%s' 'DEFAULT_IP,HOST_IP,GATEWAY_IP,WSL_HOST_IP'
 }
 
 mpm_template_is_builtin_name() {
   local name=$1
   case "$name" in
-    DEFAULT_IP | HOST_IP | GATEWAY_IP) return 0 ;;
+    DEFAULT_IP | HOST_IP | GATEWAY_IP | WSL_HOST_IP) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+mpm_template_is_builtin_token_value() {
+  mpm_template_is_builtin_name "$1"
 }
 
 mpm_template_memo_get() {
@@ -42,6 +46,7 @@ mpm_template_resolve_builtin() {
         val=$(mpm_resolve_default_ip)
       fi
       ;;
+    WSL_HOST_IP) val=$(mpm_resolve_wsl_host_ip) || return 1 ;;
     *) return 1 ;;
   esac
   mpm_template_memo_set "$memo_key" "$val"
@@ -75,6 +80,10 @@ mpm_template_resolve_var() {
     return $?
   fi
   if val=$(mpm_template_preset_param "$scope" "$preset" "$name"); then
+    if mpm_template_is_builtin_token_value "$val"; then
+      mpm_template_resolve_builtin "$val" "$scope"
+      return $?
+    fi
     mpm_template_memo_set "$memo_key" "$val"
     printf '%s' "$val"
     return 0

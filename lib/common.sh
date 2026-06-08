@@ -9,7 +9,7 @@ if [[ -d "${MPM_PREFIX}/share/profiles" ]]; then
   export MPM_PREFIX
 fi
 MPM_SHARE_PROFILES="${MPM_PREFIX}/share/profiles"
-MPM_JSON_SCHEMA_VERSION=3
+MPM_JSON_SCHEMA_VERSION=4
 
 mpm_config_dir() {
   echo "${XDG_CONFIG_HOME:-$HOME/.config}/mpm"
@@ -69,8 +69,12 @@ mpm_require_yq() {
 source "${MPM_PREFIX}/lib/resolvers/default_ip.sh"
 # shellcheck source=resolvers/host_ip.sh
 source "${MPM_PREFIX}/lib/resolvers/host_ip.sh"
+# shellcheck source=resolvers/wsl_host_ip.sh
+source "${MPM_PREFIX}/lib/resolvers/wsl_host_ip.sh"
 # shellcheck source=template.sh
 source "${MPM_PREFIX}/lib/template.sh"
+# shellcheck source=runtime_override.sh
+source "${MPM_PREFIX}/lib/runtime_override.sh"
 
 mpm_groups_yaml() {
   printf '%s' "${MPM_SHARE_PROFILES}/groups.yaml"
@@ -141,15 +145,23 @@ mpm_preset_has() {
   yq -e "has(\"${preset}\")" "$f" >/dev/null 2>&1
 }
 
-# Resolve preset field; expand ${VAR} for proxy URL fields only.
+# Resolve preset field; expand ${VAR} for proxy fields; apply overrides.yaml when loaded.
 mpm_preset_resolve_field() {
-  local scope=$1 preset=$2 yqpath=$3 raw basepath
+  local scope=$1 preset=$2 yqpath=$3 raw basepath expanded
   raw=$(mpm_preset_yq "$scope" "$preset" "$yqpath") || return 1
   [[ "$raw" == "null" ]] && raw=""
   basepath=${yqpath%% *}
   case "$basepath" in
     .http_proxy | .https_proxy | .all_proxy)
-      mpm_template_expand "$raw" "$scope" "$preset"
+      expanded=$(mpm_template_expand "$raw" "$scope" "$preset") || return 1
+      mpm_runtime_override_apply_proxy_url "$scope" "$preset" "$basepath" "$expanded"
+      ;;
+    .no_proxy)
+      expanded=$raw
+      if [[ "$raw" == *'${'* ]]; then
+        expanded=$(mpm_template_expand "$raw" "$scope" "$preset") || return 1
+      fi
+      mpm_runtime_override_apply_no_proxy "$scope" "$preset" "$expanded"
       ;;
     *)
       printf '%s' "$raw"
@@ -162,12 +174,104 @@ mpm_backup_file() {
   local f=$1
   [[ -e "$f" ]] || return 0
   local bak="${f}.bak.$(date +%Y%m%d%H%M%S)"
-  cp -a "$f" "$bak"
+  if mpm_needs_sudo_for_path "$f"; then
+    mpm_sudo cp -a "$f" "$bak"
+  else
+    cp -a "$f" "$bak"
+  fi
   echo "$bak"
+}
+
+# Write content to dest (mktemp in $TMPDIR, then mv; sudo when dest is under /etc etc.).
+mpm_write_file() {
+  local dest=$1 content=$2
+  local tmp parent
+  tmp=$(mktemp)
+  printf '%s' "$content" >"$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  parent=$(dirname "$dest")
+  if mpm_needs_sudo_for_path "$dest"; then
+    mpm_sudo mkdir -p "$parent" || {
+      rm -f "$tmp"
+      return 1
+    }
+    mpm_sudo mv "$tmp" "$dest" || {
+      rm -f "$tmp"
+      return 1
+    }
+    mpm_sudo chmod 0644 "$dest"
+  else
+    mkdir -p "$parent" || {
+      rm -f "$tmp"
+      return 1
+    }
+    mv "$tmp" "$dest" || {
+      rm -f "$tmp"
+      return 1
+    }
+    chmod 0644 "$dest"
+  fi
+  return 0
 }
 
 mpm_is_root() {
   [[ "${EUID:-0}" -eq 0 ]]
+}
+
+# True when path is under system trees and the current user is not root.
+mpm_needs_sudo_for_path() {
+  local path=$1
+  mpm_is_root && return 1
+  case "$path" in
+    /etc/* | /usr/local/* | /usr/* | /var/lib/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Cache sudo credentials once before batch privileged operations (sudo -v).
+mpm_sudo_cache_credentials() {
+  mpm_is_root && return 0
+  if sudo -n -v 2>/dev/null; then
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    sudo -v
+    return $?
+  fi
+  echo "mpm: sudo credentials required (run: sudo -v, or configure NOPASSWD for unattended use)" >&2
+  return 1
+}
+
+# Run command via sudo when not root; no-op as root.
+mpm_sudo() {
+  if mpm_is_root; then
+    "$@"
+    return $?
+  fi
+  mpm_sudo_cache_credentials || return 1
+  sudo "$@"
+}
+
+# apt/docker/k3s scopes invoke internal sudo when not root.
+mpm_scope_needs_sudo() {
+  local id=$1
+  case "$id" in
+    apt | docker | k3s)
+      mpm_is_root && return 1
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+mpm_use_needs_sudo() {
+  local id
+  for id in "$@"; do
+    mpm_scope_needs_sudo "$id" && return 0
+  done
+  return 1
 }
 
 mpm_require_jq_optional() {
@@ -191,6 +295,16 @@ mpm_state_touch_scope() {
   fi
 }
 
+# False when preset must not appear in mpm ls (internal fixtures, test* ids).
+mpm_preset_is_public() {
+  local scope=$1 pid=$2
+  local f="${MPM_SHARE_PROFILES}/presets/${scope}.yaml"
+  [[ -f "$f" ]] || return 1
+  [[ "$pid" == test* ]] && return 1
+  yq -e ".[\"${pid}\"].internal == true" "$f" >/dev/null 2>&1 && return 1
+  return 0
+}
+
 mpm_preset_table_lines() {
   local scope=$1
   mpm_require_yq || return 1
@@ -199,6 +313,7 @@ mpm_preset_table_lines() {
   local pid summ hint
   while IFS= read -r pid; do
     [[ -z "$pid" || "$pid" == "null" ]] && continue
+    mpm_preset_is_public "$scope" "$pid" || continue
     summ=$(yq -r ".[\"${pid}\"].summary // \"\"" "$f")
     hint=$(yq -r ".[\"${pid}\"].probe // .[\"${pid}\"].http_proxy // \"\"" "$f")
     printf '%s\t%s\t%s\n' "$pid" "$summ" "$hint"
@@ -334,7 +449,7 @@ mpm_emit_proxy_exports_sh() {
   [[ "$hs" == "null" ]] && hs=""
   ap=$(mpm_preset_resolve_field "$sc" "$pid" '.all_proxy // ""') || return 1
   [[ "$ap" == "null" ]] && ap=""
-  np=$(mpm_preset_yq "$sc" "$pid" '.no_proxy // ""') || return 1
+  np=$(mpm_preset_resolve_field "$sc" "$pid" '.no_proxy // ""') || return 1
   [[ "$np" == "null" ]] && np=""
   if [[ -z "$hp" && -z "$hs" && -z "$ap" ]]; then
     mpm_emit_proxy_unsets_sh

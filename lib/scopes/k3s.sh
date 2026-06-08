@@ -61,7 +61,7 @@ mpm_scope_k3s__read_proxy_fields() {
   MPM_K3S_HP=$(mpm_preset_resolve_field k3s "$preset" '.http_proxy') || return 1
   MPM_K3S_HS=$(mpm_preset_resolve_field k3s "$preset" '.https_proxy') || return 1
   MPM_K3S_AP=$(mpm_preset_resolve_field k3s "$preset" '.all_proxy') || return 1
-  MPM_K3S_NP=$(mpm_preset_yq k3s "$preset" '.no_proxy') || return 1
+  MPM_K3S_NP=$(mpm_preset_resolve_field k3s "$preset" '.no_proxy') || return 1
   [[ "$MPM_K3S_HP" == "null" ]] && MPM_K3S_HP=""
   [[ "$MPM_K3S_HS" == "null" ]] && MPM_K3S_HS=""
   [[ "$MPM_K3S_AP" == "null" ]] && MPM_K3S_AP=""
@@ -188,17 +188,24 @@ mpm_scope_k3s_get_state() {
 }
 
 mpm_scope_k3s_restart_for_preset() {
-  local preset=$1
+  local preset=$1 unit
   mpm_require_yq || return 0
-  local unit
   while IFS= read -r unit; do
     [[ -z "$unit" ]] && continue
     if mpm_scope_k3s__unit_exists "$unit" && systemctl is-active --quiet "${unit}" 2>/dev/null; then
       echo "mpm(k3s): restarting ${unit}…" >&2
-      systemctl restart "${unit}" || return 1
+      if mpm_is_root; then
+        systemctl restart "${unit}" || return 1
+      else
+        mpm_sudo systemctl restart "${unit}" || return 1
+      fi
     fi
   done < <(yq -r ".[\"${preset}\"].restart_units[]?" "${MPM_SHARE_PROFILES}/presets/k3s.yaml" 2>/dev/null)
-  systemctl daemon-reload 2>/dev/null || true
+  if mpm_is_root; then
+    systemctl daemon-reload 2>/dev/null || true
+  else
+    mpm_sudo systemctl daemon-reload 2>/dev/null || true
+  fi
 }
 
 mpm_scope_k3s__ensure_fragment_parent() {
@@ -209,19 +216,22 @@ mpm_scope_k3s__ensure_fragment_parent() {
     echo "mpm(k3s): ${parent} exists but is not a directory; fix systemd layout" >&2
     return 1
   fi
-  mkdir -p "$parent" || {
-    echo "mpm(k3s): mkdir -p ${parent} failed (errno $?)" >&2
-    return 1
-  }
+  if mpm_needs_sudo_for_path "$path"; then
+    mpm_sudo mkdir -p "$parent" || {
+      echo "mpm(k3s): mkdir -p ${parent} failed (errno $?)" >&2
+      return 1
+    }
+  else
+    mkdir -p "$parent" || {
+      echo "mpm(k3s): mkdir -p ${parent} failed (errno $?)" >&2
+      return 1
+    }
+  fi
   return 0
 }
 
 mpm_scope_k3s_apply_preset() {
   local preset=$1
-  mpm_is_root || {
-    echo "mpm(k3s): root required" >&2
-    return 2
-  }
   mpm_require_yq || return 1
   mpm_preset_has k3s "$preset" || {
     echo "mpm(k3s): unknown preset: ${preset}" >&2
@@ -248,11 +258,19 @@ mpm_scope_k3s_apply_preset() {
       fi
       [[ -f "$ef" ]] && mpm_backup_file "$ef" >/dev/null
       [[ -f "$d" ]] && mpm_backup_file "$d" >/dev/null
-      rm -f "$ef" "$d"
+      if mpm_needs_sudo_for_path "$ef"; then
+        mpm_sudo rm -f "$ef" "$d"
+      else
+        rm -f "$ef" "$d"
+      fi
       wrote=1
     done
     [[ "$wrote" -eq 0 ]] && echo "already using k3s/direct" >&2
-    systemctl daemon-reload 2>/dev/null || true
+    if mpm_is_root; then
+      systemctl daemon-reload 2>/dev/null || true
+    else
+      mpm_sudo systemctl daemon-reload 2>/dev/null || true
+    fi
     mpm_scope_k3s_restart_for_preset "$preset" || true
     return 0
   fi
@@ -292,34 +310,24 @@ mpm_scope_k3s_apply_preset() {
     fi
     [[ -f "$ef" ]] && mpm_backup_file "$ef" >/dev/null
     [[ -f "$d" ]] && mpm_backup_file "$d" >/dev/null
-    if ! printf '%s\n' "$env_body" >"${ef}.tmp"; then
-      echo "mpm(k3s): cannot write ${ef}.tmp" >&2
-      rm -f "${ef}.tmp"
+    mpm_write_file "$ef" "$env_body" || {
+      echo "mpm(k3s): cannot write ${ef}" >&2
       return 1
-    fi
-    if ! mv "${ef}.tmp" "$ef"; then
-      echo "mpm(k3s): cannot mv ${ef}.tmp -> ${ef}" >&2
-      rm -f "${ef}.tmp"
+    }
+    mpm_write_file "$d" "$conf_body" || {
+      echo "mpm(k3s): cannot write ${d}" >&2
       return 1
-    fi
-    chmod 0644 "$ef" || true
-    if ! printf '%s\n' "$conf_body" >"${d}.tmp"; then
-      echo "mpm(k3s): cannot write ${d}.tmp" >&2
-      rm -f "${d}.tmp"
-      return 1
-    fi
-    if ! mv "${d}.tmp" "$d"; then
-      echo "mpm(k3s): cannot mv ${d}.tmp -> ${d}" >&2
-      rm -f "${d}.tmp"
-      return 1
-    fi
-    chmod 0644 "$d" || true
+    }
     wrote=1
   done
   if [[ "$wrote" -eq 0 ]]; then
     echo "already using k3s/${preset}" >&2
   fi
-  systemctl daemon-reload 2>/dev/null || true
+  if mpm_is_root; then
+    systemctl daemon-reload 2>/dev/null || true
+  else
+    mpm_sudo systemctl daemon-reload 2>/dev/null || true
+  fi
   mpm_scope_k3s_restart_for_preset "$preset" || true
   return 0
 }
@@ -356,7 +364,7 @@ mpm_scope_k3s__run_k3s() {
   if mpm_is_root; then
     k3s "$@"
   else
-    sudo k3s "$@"
+    mpm_sudo k3s "$@"
   fi
 }
 
@@ -368,7 +376,8 @@ mpm_scope_k3s__timeout_run() {
     if mpm_is_root; then
       timeout "$seconds" k3s "$@"
     else
-      timeout "$seconds" sudo k3s "$@"
+      # timeout(1) cannot invoke shell functions; run sudo timeout … after credential cache.
+      mpm_sudo timeout "$seconds" k3s "$@"
     fi
   else
     mpm_scope_k3s__run_k3s "$@"
@@ -395,7 +404,7 @@ mpm_scope_k3s__live_pull_smoke() {
   : >"$log"
   mpm_scope_k3s__remove_smoke_image "$ref"
   if ! mpm_is_root; then
-    echo "mpm(k3s-test): not root; using sudo for k3s crictl/ctr (containerd socket)" >&2
+    echo "mpm(k3s-test): using sudo for k3s crictl/ctr (containerd socket)" >&2
   fi
   if mpm_scope_k3s__crictl_usable; then
     echo "mpm(k3s-test): trying k3s crictl pull ${ref}" >&2
@@ -454,7 +463,7 @@ mpm_scope_k3s__live_pull_smoke() {
   fi
   tail -n 25 "$log" >&2 || true
   if grep -qiE 'permission denied|connect: permission denied' "$log" 2>/dev/null; then
-    echo "mpm(k3s-test): hint: live pull needs root; use: sudo mpm test k3s" >&2
+    echo "mpm(k3s-test): hint: live pull needs sudo; run: mpm test k3s (after mpm use with cached sudo)" >&2
   fi
   rm -f "$log"
   return 1

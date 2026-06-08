@@ -1,0 +1,18 @@
+proxy:
+  summary: "HTTP(S) proxy for apt (apt.conf.d Acquire::*)"
+  params:
+    PROXY_HOST: DEFAULT_IP
+    PROXY_PORT: "7890"
+  http_proxy: "http://${PROXY_HOST}:${PROXY_PORT}"
+  https_proxy: "http://${PROXY_HOST}:${PROXY_PORT}"
+  all_proxy: "socks5://${PROXY_HOST}:${PROXY_PORT}"
+  no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+  probe: "http://archive.ubuntu.com/ubuntu/"
+
+direct:
+  summary: "Remove mpm apt proxy config"
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+  no_proxy: ""
+  probe: ""

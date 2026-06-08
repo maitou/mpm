@@ -206,7 +206,7 @@ mpm_scope_go__test_preset_live() {
   [[ "$hs" == "null" ]] && hs=""
   ap=$(mpm_preset_resolve_field go "$preset" '.all_proxy // ""')
   [[ "$ap" == "null" ]] && ap=""
-  np=$(mpm_preset_yq go "$preset" '.no_proxy // ""')
+  np=$(mpm_preset_resolve_field go "$preset" '.no_proxy // ""')
   [[ "$np" == "null" ]] && np=""
   echo "mpm(go-test): ${preset} matches inferred shell block → git ls-remote smoke" >&2
   mpm_scope_go__git_ls_remote_smoke "https://github.com/git/git.git" "$hp" "$hs" "$ap" "$np" || return 1
@@ -221,7 +221,7 @@ mpm_scope_go_test_preset() {
   [[ "$hs" == "null" ]] && hs=""
   ap=$(mpm_preset_resolve_field go "$preset" '.all_proxy // ""')
   [[ "$ap" == "null" ]] && ap=""
-  np=$(mpm_preset_yq go "$preset" '.no_proxy // ""')
+  np=$(mpm_preset_resolve_field go "$preset" '.no_proxy // ""')
   [[ "$np" == "null" ]] && np=""
   probe=$(mpm_preset_yq go "$preset" '.probe // ""')
   [[ "$probe" == "null" ]] && probe=""
