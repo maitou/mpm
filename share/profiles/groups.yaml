@@ -4,6 +4,7 @@ proxy-group:
   apt: proxy
   shell: proxy
   docker: proxy
+  kind: proxy
   k3s: proxy
   go: proxy
 
@@ -11,5 +12,6 @@ direct-group:
   apt: direct
   shell: direct
   docker: direct
+  kind: direct
   k3s: direct
   go: direct

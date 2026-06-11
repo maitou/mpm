@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # Ordered scope list; scheduler runs use in this order.
 # apt is first: system-level apt proxy before shell ~/.bashrc (scripts often apt right after env setup).
-MPM_SCOPE_REGISTRY=(apt shell docker k3s go)
+# docker → kind → k3s: Engine proxy before kind node drop-ins; k3s is separate host systemd stack.
+MPM_SCOPE_REGISTRY=(apt shell docker kind k3s go)
 
 mpm_registry_list() {
   printf '%s\n' "${MPM_SCOPE_REGISTRY[@]}"

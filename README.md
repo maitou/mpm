@@ -63,6 +63,25 @@ sudo ./install_mihomo_service.sh /path/to/mihomo-linux-*.gz
 
 Then read [Usage examples](#usage-examples).
 
+### Uninstall
+
+<a id="uninstall"></a>
+
+Removing mpm **does not** revert proxy drop-ins written by **`mpm use`**. Run **`mpm use direct-group`** first if you need direct outbound access again.
+
+```bash
+# Default: remove /usr/local/bin/mpm and /usr/local/share/mpm; keep /etc/mpm/overrides.yaml
+sudo bash uninstall.sh
+
+# Or via CLI (same options)
+sudo mpm uninstall
+
+# Also remove system overrides
+sudo bash uninstall.sh --remove-overrides
+```
+
+Options: **`--prefix=DIR`**, **`--dry-run`**, **`--remove-overrides`**, **`--remove-yq`**, **`--remove-user-config`**. See **`bash uninstall.sh --help`**.
+
 ## Before you use
 
 <a id="usage-notes"></a>
@@ -94,6 +113,7 @@ sudo nano /etc/mpm/overrides.yaml
 | `apt` | `/etc/apt/apt.conf.d/mpm-proxy.conf` (`Acquire::http::Proxy`, etc.); **effective on the next `apt-get`** | internal sudo |
 | `shell` | `~/.bashrc` mpm-marked `http_proxy` / `https_proxy` / `all_proxy` / `no_proxy` | no |
 | `docker` | systemd drop-in for `docker.service` (**restart** docker after change) | internal sudo |
+| `kind` | systemd drop-ins inside **kind node containers** for `containerd` / `kubelet` (multi-cluster; no `127.0.0.1` proxy URL in nodes) | no (requires **docker** CLI) |
 | `k3s` | systemd drop-ins for `k3s.service` / `k3s-agent.service` (if present; **restart** units after change) | internal sudo |
 | `go` | No separate file writes in MVP; relies on **shell** exports for git-backed modules | no |
 
@@ -104,7 +124,7 @@ Built-in groups live in **`share/profiles/groups.yaml`**:
 | **`proxy-group`** | Map each scope to its **`proxy`** preset (URLs from presets + overrides). |
 | **`direct-group`** | Remove mpm-managed fragments / apply **`direct`** preset semantics. |
 
-You can also run **`mpm use SCOPE/PRESET`** (e.g. **`mpm use docker/proxy`**). **`proxy-group`** runs **apt → shell → docker → k3s → go** (internal sudo for apt/docker/k3s).
+You can also run **`mpm use SCOPE/PRESET`** (e.g. **`mpm use docker/proxy`**). **`proxy-group`** runs **apt → shell → docker → kind → k3s → go** (internal sudo for apt/docker/k3s; kind needs docker CLI).
 
 ### Builtin proxy_host tokens
 
@@ -177,7 +197,7 @@ For WSL, complete the YAML in [WSL + Windows proxy](#overrides-examples) before 
 ```bash
 mpm --list-scopes
 
-# Built-in proxy group (apt → shell → docker → k3s → go; internal sudo for apt/docker/k3s)
+# Built-in proxy group (apt → shell → docker → kind → k3s → go; internal sudo for apt/docker/k3s)
 mpm use proxy-group
 ```
 
@@ -222,4 +242,4 @@ Do **not** run **`sudo mpm use proxy-group`** — shell scope would write **`/ro
 
 - Does **not** install or configure the proxy daemon itself (optional **install_mihomo_service.sh** only helps with mihomo).
 - Does **not** modify image references in your git-hosted Kubernetes manifests or Dockerfiles.
-- Does **not** configure **kind** cluster node proxies (use kind cluster YAML / future kind scope).
+- **kind**: manages proxy drop-ins inside **existing** kind node containers; run **`mpm use kind/proxy`** after creating clusters (or use **`proxy-group`**). Complements smoctl create-time env injection.

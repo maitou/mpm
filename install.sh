@@ -34,6 +34,8 @@ Installs:
   - mpm data -> PREFIX/share/mpm/ (lib/, share/profiles/, etc. for MPM_PREFIX)
   - Seeds /etc/mpm/overrides.yaml when installing to a system prefix (existing file kept)
   - Deps: mikefarah/yq (YAML), jq (--json / state.json), curl (mpm test)
+
+To uninstall: bash uninstall.sh  (or: mpm uninstall)
 EOF
 }
 

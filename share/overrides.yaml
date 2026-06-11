@@ -30,18 +30,19 @@
 #     proxy_host: GATEWAY_IP
 #     proxy_port: "7890"
 #     no_proxy: "localhost,127.0.0.1,::1,127.0.0.0/8,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local"
+#   kind:
+#     proxy_host: GATEWAY_IP
+#     proxy_port: "7890"
+#     clusters:
+#       - kind
+#       - kind-dev
+#     cluster_overrides:
+#       kind-ci:
+#         proxy_host: HOST_IP
+#         proxy_port: "10808"
 
 # WSL + Windows proxy (uncomment and adjust):
+# Prefer defaults.proxy_host so every scope (including kind) picks up WSL_HOST_IP.
 # defaults:
+#   proxy_host: WSL_HOST_IP
 #   proxy_port: "10808"
-# scopes:
-#   apt:
-#     proxy_host: WSL_HOST_IP
-#   shell:
-#     proxy_host: WSL_HOST_IP
-#   go:
-#     proxy_host: WSL_HOST_IP
-#   docker:
-#     proxy_host: WSL_HOST_IP
-#   k3s:
-#     proxy_host: WSL_HOST_IP

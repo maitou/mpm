@@ -28,14 +28,14 @@ source "${MPM_PREFIX}/lib/registry.sh"
 
 mpm_help() {
   cat <<'EOF'
-mpm - Multi Proxy Manager (shell, Docker, k3s, Go outbound HTTP(S) proxy wiring)
+mpm - Multi Proxy Manager (shell, Docker, kind, k3s, Go outbound HTTP(S) proxy wiring)
 
 Usage:
   mpm --help
   mpm --list-scopes
   mpm [OPTION]... VERB [ARG]...
 
-  First argument must be a registered verb (ls, use, current, test, shell-env) or --list-scopes.
+  First argument must be a registered verb (ls, use, current, test, shell-env, uninstall) or --list-scopes.
   Scope-specific subcommands like `mpm shell …` are not supported.
 
 Options:
@@ -63,13 +63,18 @@ Verbs:
   ls                     List groups (share/profiles/groups.yaml) and presets; `*` marks inferred current preset when known.
   test [TARGET]          Read-only checks (curl and/or live tools). When the tested preset matches the
                            inferred on-disk preset and uses a proxy: apt runs apt-get update; shell/go use
-                           env-style curl or git; docker runs docker pull; k3s runs crictl/ctr pull.
+                           env-style curl or git; docker runs docker pull hello-world; kind runs crictl pull
+                           hello-world inside kind node containers; k3s runs crictl/ctr pull hello-world.
                            Otherwise curl --proxy only.
                            TARGET: empty = each scope’s inferred preset; group = mapped presets per scope;
                            scope id = inferred preset; scope/preset = explicit preset.
   shell-env              Print sh export/unset lines for proxy-related scopes (shell, go) from inferred state.
                            Does not change the shell by itself; run eval "$(mpm shell-env --scopes=shell,go)"
                            or use mpm use … --export-shell-env.
+  uninstall [OPTION]...  Remove mpm CLI and PREFIX/share/mpm (default keeps /etc/mpm/overrides.yaml).
+                           Options match uninstall.sh: --prefix=DIR, --dry-run, --remove-overrides,
+                           --remove-yq, --remove-user-config. Does not revert proxy drop-ins; run
+                           mpm use direct-group first if needed.
 
 Groups (built-in, share/profiles/groups.yaml):
   proxy-group            Map scopes to local proxy preset (default http://127.0.0.1:7890 — see YAML).
@@ -80,13 +85,13 @@ Exit codes:
   3 partial failure after best-effort (successful scopes are not rolled back).
 
 Rules:
-  First argument must be ls|use|current|test|shell-env, or --help, or --list-scopes.
+  First argument must be ls|use|current|test|shell-env|uninstall, or --help, or --list-scopes.
 
-Scope apply order (proxy-group / direct-group): apt → shell → docker → k3s → go (see lib/registry.sh).
+Scope apply order (proxy-group / direct-group): apt → shell → docker → kind → k3s → go (see lib/registry.sh).
 
-Dependencies: yq for YAML; curl for test; jq optional (state.json).
+Dependencies: yq for YAML; curl for test; docker CLI for kind scope; jq optional (state.json).
   apt/docker/k3s scopes use internal sudo (run mpm as your user; sudo -v once when prompted).
-  Do not run sudo mpm for proxy-group (shell would write /root/.bashrc).
+  kind scope requires docker (docker group or sudo docker); do not use sudo mpm for proxy-group.
   yq lookup: /usr/local/bin, /usr/bin, /snap, SUDO_USER ~/.local/bin, then HOME/.local/bin.
 EOF
 }
@@ -601,6 +606,58 @@ mpm_test_cmd() {
   exit 1
 }
 
+mpm_resolve_install_prefix() {
+  local bindir
+  bindir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+  if [[ -f "${bindir}/../share/mpm/lib/common.sh" ]]; then
+    (cd "${bindir}/.." && pwd -P)
+    return 0
+  fi
+  if [[ -x /usr/local/bin/mpm ]]; then
+    printf '%s\n' /usr/local
+    return 0
+  fi
+  printf '%s\n' "$MPM_PREFIX"
+}
+
+mpm_uninstall_warn_proxy_state() {
+  local id preset
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    mpm_source_scope "$id" 2>/dev/null || continue
+    preset=$(mpm_get_current_preset "$id" 2>/dev/null) || continue
+    [[ -z "$preset" || "$preset" == "direct" ]] && continue
+    echo "mpm: [${id}] inferred preset is ${preset} (not direct); consider: mpm use direct-group" >&2
+  done < <(mpm_registry_list 2>/dev/null)
+}
+
+mpm_uninstall_cmd() {
+  local uninstall_sh root_uninstall install_prefix
+  local -a uargs=()
+  local arg has_prefix=0
+
+  install_prefix=$(mpm_resolve_install_prefix) || exit 1
+  for arg in "$@"; do
+    if [[ "$arg" == --prefix=* ]]; then
+      has_prefix=1
+    fi
+    uargs+=("$arg")
+  done
+  [[ "$has_prefix" -eq 0 ]] && uargs=(--prefix="$install_prefix" "${uargs[@]}")
+
+  mpm_uninstall_warn_proxy_state
+  root_uninstall="${MPM_PREFIX}/uninstall.sh"
+  uninstall_sh="${MPM_PREFIX}/lib/uninstall.sh"
+  if [[ -f "$root_uninstall" ]]; then
+    exec bash "$root_uninstall" "${uargs[@]}"
+  fi
+  if [[ -f "$uninstall_sh" ]]; then
+    exec bash "$uninstall_sh" "${uargs[@]}"
+  fi
+  echo "mpm: uninstall script not found under ${MPM_PREFIX}" >&2
+  exit 1
+}
+
 main() {
   [[ $# -eq 0 ]] && {
     mpm_help
@@ -641,6 +698,11 @@ main() {
   }
   shift
 
+  if [[ "$verb" == "uninstall" ]]; then
+    mpm_uninstall_cmd "$@"
+    exit $?
+  fi
+
   mpm_runtime_override_load_config || exit 1
 
   case "$verb" in
@@ -660,7 +722,7 @@ main() {
       mpm_shell_env_cmd "${MPM_SCOPES_CSV:-}"
       ;;
     *)
-      echo "mpm: unknown verb: ${verb} (ls | use | current | test | shell-env | --list-scopes; see mpm --help)" >&2
+      echo "mpm: unknown verb: ${verb} (ls | use | current | test | shell-env | uninstall | --list-scopes; see mpm --help)" >&2
       exit 1
       ;;
   esac

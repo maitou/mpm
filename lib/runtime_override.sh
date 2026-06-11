@@ -254,3 +254,45 @@ mpm_runtime_override_json_object() {
     --argjson active_fields "$active_json" \
     '{file:$file,proxy_host:$proxy_host,proxy_host_token:$proxy_host_token,proxy_port:$proxy_port,no_proxy:$no_proxy,active_fields:$active_fields}'
 }
+
+# kind scope: clusters whitelist in overrides (absent/null=all, []=none, non-empty=filter).
+mpm_runtime_override_kind_clusters_mode() {
+  local f len
+  mpm_runtime_override_load_config || return 1
+  f=$(mpm_runtime_override_config_path)
+  [[ -f "$f" ]] || {
+    printf '%s' all
+    return 0
+  }
+  if ! yq -e '.scopes.kind.clusters' "$f" >/dev/null 2>&1; then
+    printf '%s' all
+    return 0
+  fi
+  len=$(yq -r '.scopes.kind.clusters | length' "$f" 2>/dev/null) || len=0
+  if [[ "$len" == "0" ]]; then
+    printf '%s' none
+    return 0
+  fi
+  printf '%s' filter
+}
+
+mpm_runtime_override_kind_cluster_in_whitelist() {
+  local cluster=$1 mode f
+  mode=$(mpm_runtime_override_kind_clusters_mode) || return 1
+  case "$mode" in
+    all) return 0 ;;
+    none) return 1 ;;
+  esac
+  f=$(mpm_runtime_override_config_path)
+  yq -e ".scopes.kind.clusters[] | select(. == \"${cluster}\")" "$f" >/dev/null 2>&1
+}
+
+mpm_runtime_override_kind_cluster_field() {
+  local cluster=$1 field=$2 f val
+  mpm_runtime_override_load_config || return 1
+  f=$(mpm_runtime_override_config_path)
+  [[ -f "$f" ]] || return 1
+  val=$(yq -r ".scopes.kind.cluster_overrides[\"${cluster}\"].${field} // \"\"" "$f" 2>/dev/null) || return 1
+  [[ -z "$val" || "$val" == "null" ]] && return 1
+  printf '%s' "$val"
+}

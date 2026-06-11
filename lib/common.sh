@@ -274,6 +274,18 @@ mpm_use_needs_sudo() {
   return 1
 }
 
+# docker CLI + daemon reachable (kind scope; optional retry via sudo).
+mpm_require_docker() {
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1 && mpm_sudo docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "mpm: docker CLI required (install Docker and ensure docker info works, or join docker group / use sudo)" >&2
+  return 1
+}
+
 mpm_require_jq_optional() {
   command -v jq >/dev/null 2>&1
 }
@@ -353,6 +365,14 @@ mpm_http_probe() {
   return 1
 }
 
+# 2xx/3xx pass; Docker Registry GET /v2/ without auth returns 401 (proxy+TLS ok).
+mpm_http_probe_status_ok() {
+  local code=$1 target_url=$2
+  [[ "$code" =~ ^[23][0-9][0-9]$ ]] && return 0
+  [[ "$code" == "401" && "$target_url" =~ registry-1\.docker\.io/v2/?$ ]] && return 0
+  return 1
+}
+
 # Use HTTP proxy for a GET to target_url (CONNECT tunnel for HTTPS). needs curl.
 mpm_http_probe_via_proxy() {
   local proxy_url=$1 target_url=$2 label=$3
@@ -382,8 +402,12 @@ mpm_http_probe_via_proxy() {
   fi
   code=${out%% *}
   sec=${out#* }
-  if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
-    printf '%s: OK http=%s time=%ss (via %s)\n' "$label" "$code" "$sec" "$proxy_url"
+  if mpm_http_probe_status_ok "$code" "$target_url"; then
+    if [[ "$code" == "401" ]]; then
+      printf '%s: OK http=%s time=%ss (via %s; registry requires auth)\n' "$label" "$code" "$sec" "$proxy_url"
+    else
+      printf '%s: OK http=%s time=%ss (via %s)\n' "$label" "$code" "$sec" "$proxy_url"
+    fi
     return 0
   fi
   printf '%s: FAIL http=%s time=%ss proxy=%s target=%s\n' "$label" "$code" "$sec" "$proxy_url" "$target_url"

@@ -1,7 +1,11 @@
 # shellcheck shell=bash
 
+mpm_is_wsl() {
+  grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
+}
+
 mpm_resolve_wsl_host_ip() {
-  if ! grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+  if ! mpm_is_wsl; then
     echo "mpm: WSL_HOST_IP requires WSL (see /proc/version)" >&2
     return 1
   fi
