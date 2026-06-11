@@ -19,6 +19,8 @@ Usage: bash uninstall.sh [OPTION]...
 Removes mpm CLI and PREFIX/share/mpm only. Does NOT revert proxy drop-ins applied by mpm use;
 run 'mpm use direct-group' first if you need direct outbound access.
 
+Run as your user (not 'sudo bash uninstall.sh'); the script runs 'sudo -v' when needed for /usr/local or /etc/mpm.
+
 To install: bash install.sh
 EOF
 }

@@ -67,18 +67,22 @@ sudo ./install_mihomo_service.sh /path/to/mihomo-linux-*.gz
 
 卸载 mpm **不会**自动撤销 **`mpm use`** 写入的代理配置。若需恢复直连，请先执行 **`mpm use direct-group`**。
 
+与 **install.sh** 相同：请以**当前用户**执行（**不必**写 `sudo bash …` 或 `sudo mpm …`）。删除 `/usr/local` 或 `/etc/mpm` 时，脚本会先 **`sudo -v`** 缓存凭证，再内部调用 sudo。
+
 ```bash
 # 默认：删除 /usr/local/bin/mpm 与 /usr/local/share/mpm；保留 /etc/mpm/overrides.yaml
-sudo bash uninstall.sh
+bash uninstall.sh
 
 # 或通过 CLI（选项相同）
-sudo mpm uninstall
+mpm uninstall
 
 # 同时删除系统 overrides
-sudo bash uninstall.sh --remove-overrides
+bash uninstall.sh --remove-overrides
 ```
 
 可选参数：**`--prefix=DIR`**、**`--dry-run`**、**`--remove-overrides`**、**`--remove-yq`**、**`--remove-user-config`**。详见 **`bash uninstall.sh --help`**。
+
+**`--prefix=$HOME/.local`** 且对该目录可写时，通常无需 sudo。**请勿**使用 **`sudo mpm uninstall`**（尤其带 **`--remove-user-config`** 时会误删 root 的配置目录）。
 
 ## 使用须知
 

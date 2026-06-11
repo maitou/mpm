@@ -69,18 +69,22 @@ Then read [Usage examples](#usage-examples).
 
 Removing mpm **does not** revert proxy drop-ins written by **`mpm use`**. Run **`mpm use direct-group`** first if you need direct outbound access again.
 
+Same as **install.sh**: run as your **normal user** (no need for `sudo bash …` or `sudo mpm …`). When removing under `/usr/local` or `/etc/mpm`, the script runs **`sudo -v`** then uses internal sudo.
+
 ```bash
 # Default: remove /usr/local/bin/mpm and /usr/local/share/mpm; keep /etc/mpm/overrides.yaml
-sudo bash uninstall.sh
+bash uninstall.sh
 
 # Or via CLI (same options)
-sudo mpm uninstall
+mpm uninstall
 
 # Also remove system overrides
-sudo bash uninstall.sh --remove-overrides
+bash uninstall.sh --remove-overrides
 ```
 
 Options: **`--prefix=DIR`**, **`--dry-run`**, **`--remove-overrides`**, **`--remove-yq`**, **`--remove-user-config`**. See **`bash uninstall.sh --help`**.
+
+With **`--prefix=$HOME/.local`** and a writable prefix, sudo is usually unnecessary. Avoid **`sudo mpm uninstall`** (especially with **`--remove-user-config`**, which would target root’s config).
 
 ## Before you use
 
